@@ -195,10 +195,12 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app, event| {
+        .run(|app, event| match event {
             // Sessions started in the app live in its terminals; don't leave them orphaned.
-            if let RunEvent::Exit = event {
-                app.state::<PtyManager>().kill_all();
-            }
+            RunEvent::Exit => app.state::<PtyManager>().kill_all(),
+            // macOS: clicking the Dock icon brings back a window hidden to the tray.
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen { .. } => desktop::show_main(app),
+            _ => {}
         });
 }
