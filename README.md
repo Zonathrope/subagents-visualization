@@ -31,3 +31,7 @@ npm run build   # release build + installers in src-tauri/target/release/bundle/
 - `src-tauri/src/parser.rs`: lenient parsing of session, job and transcript files
 - `src-tauri/src/state.rs`: in-memory graph state
 - `src-tauri/src/types.rs`: wire types (mirrors `src/types.ts`)
+
+## License
+
+MIT

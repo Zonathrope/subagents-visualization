@@ -1,9 +1,41 @@
+import { useCallback, useState } from 'react'
 import { useAgentStream } from './hooks/useAgentStream'
 import AgentGraph from './components/AgentGraph'
+import DetailPanel from './components/DetailPanel'
+import type { DetailTarget } from './components/DetailPanel'
+import type { GraphState } from './types'
 import './App.css'
+
+/** Resolves a graph node id (`agent-…`, `session-…`) to what the detail panel shows. */
+function detailTarget(state: GraphState, nodeId: string | null): DetailTarget | null {
+  if (nodeId?.startsWith('agent-')) {
+    const a = state.agents.find(a => `agent-${a.id}` === nodeId)
+    return a ? {
+      kind: 'agent',
+      title: a.description,
+      subtitle: a.agentType,
+      status: a.status,
+      transcriptPath: a.transcriptPath,
+    } : null
+  }
+  if (nodeId?.startsWith('session-')) {
+    const s = state.sessions.find(s => `session-${s.id}` === nodeId)
+    return s ? {
+      kind: 'session',
+      title: s.cwd,
+      subtitle: `v${s.version} · ${s.kind}`,
+      status: s.status,
+      transcriptPath: s.transcriptPath,
+    } : null
+  }
+  return null
+}
 
 export default function App() {
   const { graphState, connected } = useAgentStream()
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const close = useCallback(() => setSelectedId(null), [])
+  const target = detailTarget(graphState, selectedId)
 
   const activeSessions = graphState.sessions.filter(s => s.status === 'busy' || s.status === 'active').length
   const runningJobs = graphState.jobs.filter(j => j.status === 'running' || j.inFlight.tasks > 0).length
@@ -34,9 +66,11 @@ export default function App() {
       </header>
 
       <div className="body">
-        <AgentGraph state={graphState} />
+        <AgentGraph state={graphState} selectedId={target ? selectedId : null} onSelect={setSelectedId} />
 
-        {graphState.jobs.length > 0 && (
+        {target ? (
+          <DetailPanel key={selectedId} target={target} onClose={close} />
+        ) : graphState.jobs.length > 0 && (
           <aside className="sidebar">
             <div className="sidebar-title">Background jobs</div>
             {graphState.jobs.map(job => (

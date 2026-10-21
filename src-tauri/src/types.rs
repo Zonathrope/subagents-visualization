@@ -21,6 +21,9 @@ pub struct SessionInfo {
     pub started_at: i64,
     pub version: String,
     pub kind: String,
+    /// Main transcript (`projects/<project>/<sessionId>.jsonl`), once seen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -37,6 +40,9 @@ pub struct AgentNode {
     pub end_time: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_type: Option<String>,
+    /// The subagent's own transcript (`.../subagents/agent-<id>.jsonl`), once linked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -92,4 +98,6 @@ pub enum GraphEvent {
     AgentUpdate { data: AgentNode },
     JobUpdate { data: JobNode },
     JobRemoved { id: String },
+    /// New lines were appended to a transcript; open detail views should reload it.
+    TranscriptChanged { path: String },
 }

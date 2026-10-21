@@ -50,22 +50,43 @@ impl ClaudeDirs {
             };
         }
         if let Ok(rel) = path.strip_prefix(&self.projects) {
-            // projects/<project>/<session>.jsonl only; subagents/ subfolders are not tracked.
-            return (rel.components().count() == 2 && has_ext(path, "jsonl"))
-                .then(|| Target::Transcript(path.to_owned()));
+            let parts: Vec<_> = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect();
+            return match parts.as_slice() {
+                // projects/<project>/<sessionId>.jsonl
+                [_, file] if file.ends_with(".jsonl") => Some(Target::Transcript(path.to_owned())),
+                // projects/<project>/<sessionId>/subagents/agent-<id>.{jsonl,meta.json}
+                [_, _, dir, file] if dir == "subagents" && file.starts_with("agent-") => {
+                    if let Some(stem) = file.strip_suffix(".meta.json") {
+                        Some(Target::SubTranscript(path.with_file_name(format!("{stem}.jsonl"))))
+                    } else if file.ends_with(".jsonl") {
+                        Some(Target::SubTranscript(path.to_owned()))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
         }
         None
     }
 
     /// Everything currently on disk under `dir`, as watch targets.
-    fn scan(&self, dir: &Path) -> Vec<Target> {
+    fn scan(&self, dir: &Path) -> HashSet<Target> {
         let children = |d: &Path| -> Vec<PathBuf> {
             std::fs::read_dir(d)
                 .map(|it| it.filter_map(|e| e.ok().map(|e| e.path())).collect())
                 .unwrap_or_default()
         };
-        let paths = if dir == self.projects {
-            children(dir).iter().flat_map(|p| children(p)).collect()
+        let paths: Vec<PathBuf> = if dir == self.projects {
+            children(dir)
+                .iter()
+                .flat_map(|project| children(project))
+                .flat_map(|entry| {
+                    let mut found = children(&entry.join("subagents"));
+                    found.push(entry);
+                    found
+                })
+                .collect()
         } else {
             children(dir)
         };
@@ -82,7 +103,19 @@ enum Target {
     Session(PathBuf),
     /// The job's directory, `jobs/<id>`.
     Job(PathBuf),
+    /// A session's main transcript.
     Transcript(PathBuf),
+    /// A subagent's transcript; its `.meta.json` sibling links it to the spawning tool call.
+    SubTranscript(PathBuf),
+}
+
+impl Target {
+    fn transcript_path(&self) -> Option<&Path> {
+        match self {
+            Target::Transcript(p) | Target::SubTranscript(p) => Some(p),
+            _ => None,
+        }
+    }
 }
 
 pub fn spawn(
@@ -90,7 +123,9 @@ pub fn spawn(
     store: Arc<Mutex<GraphStore>>,
     emit: impl Fn(GraphEvent) + Send + 'static,
 ) {
-    thread::spawn(move || Worker { dirs, store, emit, tail: TranscriptTail::default() }.run());
+    thread::spawn(move || {
+        Worker { dirs, store, emit, tail: TranscriptTail::default(), sub_links: HashMap::new() }.run()
+    });
 }
 
 struct Worker<E> {
@@ -98,6 +133,8 @@ struct Worker<E> {
     store: Arc<Mutex<GraphStore>>,
     emit: E,
     tail: TranscriptTail,
+    /// Subagent transcript → spawning `Agent` tool_use id, cached once the meta file is read.
+    sub_links: HashMap<PathBuf, String>,
 }
 
 impl<E: Fn(GraphEvent)> Worker<E> {
@@ -122,7 +159,7 @@ impl<E: Fn(GraphEvent)> Worker<E> {
             self.dirs.jobs.clone(),
             self.dirs.projects.clone(),
         ];
-        let mut hot: HashMap<PathBuf, Instant> = HashMap::new();
+        let mut hot: HashMap<Target, Instant> = HashMap::new();
 
         loop {
             let mut pending: HashSet<Target> = HashSet::new();
@@ -145,75 +182,124 @@ impl<E: Fn(GraphEvent)> Worker<E> {
             pending.extend(rx.try_iter().filter_map(|p| self.dirs.classify(&p)));
 
             let now = Instant::now();
-            for target in &pending {
-                if let Target::Transcript(p) = target {
-                    hot.insert(p.clone(), now);
-                }
+            for target in pending.iter().filter(|t| t.transcript_path().is_some()) {
+                hot.insert(target.clone(), now);
             }
             hot.retain(|_, seen| now.duration_since(*seen) < HOT_WINDOW);
-            pending.extend(hot.keys().cloned().map(Target::Transcript));
+            pending.extend(hot.keys().cloned());
 
             for target in pending {
-                if self.handle(target.clone()) {
-                    if let Target::Transcript(p) = target {
-                        hot.insert(p, now);
-                    }
+                if self.handle(&target) && target.transcript_path().is_some() {
+                    hot.insert(target, now);
                 }
             }
         }
     }
 
     /// Applies one target to the store. Returns true if anything changed.
-    fn handle(&mut self, target: Target) -> bool {
-        let mut store = self.store.lock().unwrap();
+    fn handle(&mut self, target: &Target) -> bool {
         let mut events = Vec::new();
+        let mut new_lines = false;
 
         match target {
-            Target::Session(path) => match parser::parse_session(&path) {
-                Some(info) => {
-                    store.update_session(info.clone());
-                    events.push(GraphEvent::SessionUpdate { data: info });
-                }
-                None if !path.exists() => {
-                    let pid = path.file_stem().unwrap_or_default().to_string_lossy();
-                    if let Some(id) = store.remove_session_by_pid(&pid) {
-                        events.push(GraphEvent::SessionRemoved { id });
+            Target::Session(path) => {
+                let mut store = self.store.lock().unwrap();
+                match parser::parse_session(path) {
+                    Some(info) => {
+                        let data = store.update_session(info);
+                        events.push(GraphEvent::SessionUpdate { data });
                     }
-                }
-                None => {} // half-written file; the next change event will retry
-            },
-            Target::Job(dir) => match parser::parse_job(&dir.join("state.json")) {
-                Some(job) => {
-                    store.update_job(job.clone());
-                    events.push(GraphEvent::JobUpdate { data: job });
-                }
-                None if !dir.join("state.json").exists() => {
-                    let id = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                    if store.remove_job(&id) {
-                        events.push(GraphEvent::JobRemoved { id });
+                    None if !path.exists() => {
+                        let pid = path.file_stem().unwrap_or_default().to_string_lossy();
+                        if let Some(id) = store.remove_session_by_pid(&pid) {
+                            events.push(GraphEvent::SessionRemoved { id });
+                        }
                     }
+                    None => {} // half-written file; the next change event will retry
                 }
-                None => {}
-            },
+            }
+            Target::Job(dir) => {
+                let mut store = self.store.lock().unwrap();
+                match parser::parse_job(&dir.join("state.json")) {
+                    Some(job) => {
+                        store.update_job(job.clone());
+                        events.push(GraphEvent::JobUpdate { data: job });
+                    }
+                    None if !dir.join("state.json").exists() => {
+                        let id = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                        if store.remove_job(&id) {
+                            events.push(GraphEvent::JobRemoved { id });
+                        }
+                    }
+                    None => {}
+                }
+            }
             Target::Transcript(path) => {
-                let (spawned, completed) = parser::parse_agent_events(&self.tail.read_new_lines(&path));
-                for agent in spawned {
-                    events.push(GraphEvent::AgentUpdate { data: store.update_agent(agent) });
+                let session_id = path.file_stem().unwrap_or_default().to_string_lossy();
+                let path_str = path.to_string_lossy();
+                let lines = self.tail.read_new_lines(path);
+                let mut store = self.store.lock().unwrap();
+                if let Some(data) = store.link_session_transcript(&session_id, &path_str) {
+                    events.push(GraphEvent::SessionUpdate { data });
                 }
-                for c in completed {
-                    if let Some(agent) = store.complete_agent(&c.id, c.failed, c.at) {
-                        events.push(GraphEvent::AgentUpdate { data: agent });
+                new_lines = !lines.is_empty();
+                apply_agent_events(&mut store, &lines, None, &mut events);
+            }
+            Target::SubTranscript(path) => {
+                let parent = self.sub_link(path);
+                let path_str = path.to_string_lossy();
+                let lines = self.tail.read_new_lines(path);
+                let mut store = self.store.lock().unwrap();
+                if let Some(id) = &parent {
+                    if let Some(data) = store.link_agent_transcript(id, &path_str) {
+                        events.push(GraphEvent::AgentUpdate { data });
                     }
                 }
+                new_lines = !lines.is_empty();
+                apply_agent_events(&mut store, &lines, parent, &mut events);
             }
         }
 
-        drop(store);
+        if new_lines {
+            if let Some(path) = target.transcript_path() {
+                events.push(GraphEvent::TranscriptChanged { path: path.to_string_lossy().into_owned() });
+            }
+        }
         let changed = !events.is_empty();
         for event in events {
             (self.emit)(event);
         }
         changed
+    }
+
+    fn sub_link(&mut self, transcript: &Path) -> Option<String> {
+        if let Some(id) = self.sub_links.get(transcript) {
+            return Some(id.clone());
+        }
+        let stem = transcript.file_stem()?.to_string_lossy();
+        let id = parser::parse_subagent_meta(&transcript.with_file_name(format!("{stem}.meta.json")))?;
+        self.sub_links.insert(transcript.to_owned(), id.clone());
+        Some(id)
+    }
+}
+
+/// Folds agent spawns/completions from transcript lines into the store.
+/// `parent` is the spawning agent when the lines come from a subagent's own transcript.
+fn apply_agent_events(
+    store: &mut GraphStore,
+    lines: &[serde_json::Value],
+    parent: Option<String>,
+    events: &mut Vec<GraphEvent>,
+) {
+    let (spawned, completed) = parser::parse_agent_events(lines);
+    for mut agent in spawned {
+        agent.parent_id = parent.clone();
+        events.push(GraphEvent::AgentUpdate { data: store.update_agent(agent) });
+    }
+    for c in completed {
+        if let Some(agent) = store.complete_agent(&c.id, c.failed, c.at) {
+            events.push(GraphEvent::AgentUpdate { data: agent });
+        }
     }
 }
 
@@ -236,7 +322,11 @@ mod tests {
             t("/c/projects/p/s.jsonl"),
             Some(Target::Transcript("/c/projects/p/s.jsonl".into()))
         );
-        assert_eq!(t("/c/projects/p/s/subagents/a.jsonl"), None);
+        let sub = Some(Target::SubTranscript("/c/projects/p/s/subagents/agent-a1.jsonl".into()));
+        assert_eq!(t("/c/projects/p/s/subagents/agent-a1.jsonl"), sub);
+        assert_eq!(t("/c/projects/p/s/subagents/agent-a1.meta.json"), sub);
+        assert_eq!(t("/c/projects/p/s/other/agent-a1.jsonl"), None);
+        assert_eq!(t("/c/projects/p/s/tool-results/x.txt"), None);
         assert_eq!(t("/c/other/x.json"), None);
     }
 }

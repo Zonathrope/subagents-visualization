@@ -83,7 +83,15 @@ function buildElements(state: GraphState): { nodes: Node[]; edges: Edge[] } {
   return { nodes: applyDagreLayout(nodes, edges), edges }
 }
 
-export default function AgentGraph({ state }: { state: GraphState }) {
+export default function AgentGraph({
+  state,
+  selectedId,
+  onSelect,
+}: {
+  state: GraphState
+  selectedId: string | null
+  onSelect: (nodeId: string) => void
+}) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
   const prevRef = useRef<string>('')
@@ -98,9 +106,9 @@ export default function AgentGraph({ state }: { state: GraphState }) {
       prevRef.current = key
       setNeedsFit(true)
     }
-    setNodes(nextNodes)
+    setNodes(nextNodes.map(n => ({ ...n, selected: n.id === selectedId })))
     setEdges(nextEdges)
-  }, [nextNodes, nextEdges, setNodes, setEdges])
+  }, [nextNodes, nextEdges, selectedId, setNodes, setEdges])
 
   useEffect(() => {
     if (needsFit && rfInstance.current) {
@@ -108,6 +116,20 @@ export default function AgentGraph({ state }: { state: GraphState }) {
       setNeedsFit(false)
     }
   }, [needsFit])
+
+  // The detail panel narrows the canvas, so bring the selected node into view.
+  useEffect(() => {
+    const rf = rfInstance.current
+    const node = selectedId ? rf?.getNode(selectedId) : undefined
+    if (!node) return
+    const t = setTimeout(() => {
+      rf.setCenter(node.position.x + 140, node.position.y + 55, {
+        zoom: Math.max(rf.getZoom(), 0.9),
+        duration: 300,
+      })
+    }, 50)
+    return () => clearTimeout(t)
+  }, [selectedId])
 
   const onInit = useCallback((instance: any) => {
     rfInstance.current = instance
@@ -124,6 +146,7 @@ export default function AgentGraph({ state }: { state: GraphState }) {
         onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes}
         onInit={onInit}
+        onNodeClick={(_, node) => onSelect(node.id)}
         fitView
         fitViewOptions={{ padding: 0.15 }}
         minZoom={0.1}

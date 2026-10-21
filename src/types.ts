@@ -8,6 +8,7 @@ export interface SessionInfo extends Record<string, unknown> {
   startedAt: number
   version: string
   kind: string
+  transcriptPath?: string
 }
 
 export interface AgentNode extends Record<string, unknown> {
@@ -20,6 +21,7 @@ export interface AgentNode extends Record<string, unknown> {
   startTime: number
   endTime?: number
   agentType?: string
+  transcriptPath?: string
 }
 
 export interface JobNode extends Record<string, unknown> {
@@ -58,3 +60,36 @@ export type WsMessage =
   | { type: 'agent_update'; data: AgentNode }
   | { type: 'job_update'; data: JobNode }
   | { type: 'job_removed'; id: string }
+  | { type: 'transcript_changed'; path: string }
+
+// ── Transcript detail view (mirrors src-tauri/src/transcript.rs) ──────────────
+
+export interface DiffHunk {
+  oldStart: number
+  oldLines: number
+  newStart: number
+  newLines: number
+  lines: string[]
+}
+
+export interface ToolCall {
+  kind: 'tool'
+  id: string
+  name: string
+  at: string
+  input: Record<string, unknown>
+  result: { text: string; isError: boolean } | null
+  patch: DiffHunk[] | null
+}
+
+export type TranscriptItem =
+  | { kind: 'user'; text: string; at: string }
+  | { kind: 'assistant'; text: string; at: string }
+  | { kind: 'thinking'; text: string; at: string }
+  | { kind: 'notice'; text: string; at: string }
+  | ToolCall
+
+export interface TranscriptView {
+  items: TranscriptItem[]
+  truncated: boolean
+}

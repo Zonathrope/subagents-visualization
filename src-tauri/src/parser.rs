@@ -64,7 +64,13 @@ fn parse_session_value(data: &Value) -> Option<SessionInfo> {
         started_at: int_field(data, "startedAt"),
         version: str_field(data, &["version"]).unwrap_or_default(),
         kind: str_field(data, &["kind"]).unwrap_or_default(),
+        transcript_path: None,
     })
+}
+
+/// `subagents/agent-<id>.meta.json` names the parent's `Agent` tool_use id.
+pub fn parse_subagent_meta(path: &Path) -> Option<String> {
+    str_field(&read_json(path)?, &["toolUseId"])
 }
 
 /// `state_file` is `jobs/<id>/state.json`; the sibling `timeline.jsonl` is folded in.
@@ -176,17 +182,65 @@ pub struct Completion {
     pub at: i64,
 }
 
-/// Extracts `Agent` tool calls (spawns) and tool results (possible completions).
+/// Text inside `<tag>...</tag>`, if present.
+fn tag_text<'a>(s: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let start = s.find(&open)? + open.len();
+    let len = s[start..].find(&format!("</{tag}>"))?;
+    Some(s[start..start + len].trim())
+}
+
+/// Every string a record carries as message content (plain or text blocks), plus the
+/// top-level `content` of queue records.
+fn record_texts(msg: &Value) -> impl Iterator<Item = &str> {
+    let top = msg.get("content").and_then(Value::as_str);
+    let content = msg.pointer("/message/content");
+    let plain = content.and_then(Value::as_str);
+    let blocks = content
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|b| b.get("text").and_then(Value::as_str));
+    top.into_iter().chain(plain).chain(blocks)
+}
+
+/// A background agent's tool_result only acknowledges the launch; it finishes later.
+fn is_async_launch(msg: &Value, block: &Value) -> bool {
+    if msg.pointer("/toolUseResult/status").and_then(Value::as_str) == Some("async_launched") {
+        return true;
+    }
+    let text = match block.get("content") {
+        Some(Value::String(s)) => s.as_str(),
+        Some(Value::Array(a)) => a.first().and_then(|b| b.get("text")).and_then(Value::as_str).unwrap_or(""),
+        _ => "",
+    };
+    text.starts_with("Async agent launched")
+}
+
+/// Extracts `Agent` tool calls (spawns) and completions: synchronous tool results and
+/// `<task-notification>`s for background agents.
 pub fn parse_agent_events(messages: &[Value]) -> (Vec<AgentNode>, Vec<Completion>) {
     let mut spawned = Vec::new();
     let mut completed = Vec::new();
 
     for msg in messages {
+        let at = parse_timestamp(msg);
+
+        for text in record_texts(msg) {
+            let Some(note) = tag_text(text, "task-notification") else { continue };
+            if let (Some(id), Some(status)) = (tag_text(note, "tool-use-id"), tag_text(note, "status")) {
+                completed.push(Completion {
+                    id: id.to_owned(),
+                    failed: status != "completed",
+                    at: at.unwrap_or_else(now_ms),
+                });
+            }
+        }
+
         let Some(blocks) = msg.pointer("/message/content").and_then(Value::as_array) else {
             continue;
         };
         let kind = msg.get("type").and_then(Value::as_str);
-        let at = parse_timestamp(msg);
 
         for block in blocks {
             let block_type = block.get("type").and_then(Value::as_str);
@@ -210,10 +264,14 @@ pub fn parse_agent_events(messages: &[Value]) -> (Vec<AgentNode>, Vec<Completion
                         start_time: at.unwrap_or_else(now_ms),
                         end_time: None,
                         agent_type: str_field(input, &["subagent_type"]),
+                        transcript_path: None,
                     });
                 }
                 (Some("user"), Some("tool_result")) => {
                     let Some(id) = str_field(block, &["tool_use_id"]) else { continue };
+                    if is_async_launch(msg, block) {
+                        continue;
+                    }
                     completed.push(Completion {
                         id,
                         failed: block.get("is_error").and_then(Value::as_bool).unwrap_or(false),
@@ -297,6 +355,28 @@ mod tests {
         assert_eq!(
             completed,
             vec![Completion { id: "tu1".into(), failed: true, at: 1792576860000 }]
+        );
+    }
+
+    #[test]
+    fn async_launch_is_not_completion_but_notification_is() {
+        let note = "<task-notification>\n<task-id>a4d2</task-id>\n<tool-use-id>tu9</tool-use-id>\n\
+                    <status>completed</status>\n<summary>done</summary>\n</task-notification>";
+        let msgs = vec![
+            json!({ "type": "user", "toolUseResult": { "status": "async_launched" },
+                    "message": { "content": [ { "type": "tool_result", "tool_use_id": "tu9",
+                        "content": [ { "type": "text", "text": "Async agent launched successfully." } ] } ] }}),
+            json!({ "type": "queue-operation", "timestamp": "2026-10-21T10:05:00.000Z", "content": note }),
+            json!({ "type": "user", "message": { "content": [ { "type": "text",
+                    "text": note.replace("completed", "failed") } ] }}),
+        ];
+        let (_, completed) = parse_agent_events(&msgs);
+        assert_eq!(
+            completed,
+            vec![
+                Completion { id: "tu9".into(), failed: false, at: 1792577100000 },
+                Completion { id: "tu9".into(), failed: true, at: completed[1].at },
+            ]
         );
     }
 
