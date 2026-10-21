@@ -62,11 +62,11 @@ Tray icon with running-agent count, always-on-top mini window, start at login.
 
 Timeline, combined diffs, search and re-run are worthwhile but matter less day to day.
 
-## Open questions
+## Open questions (answered)
 
-- Which of the four jobs takes most of the user's time in practice?
-- How often do agents run in parallel on the same repo? (Drives the priority of conflict warnings.)
-- Can a permission-prompt wait be detected from files on disk?
+- Which job costs the most time? Noticing.
+- Parallel agents on one repo? Yes, mostly in separate worktrees, so overlap matters at merge time.
+- Can a permission-prompt wait be detected from disk? No; stuck detection is the stand-in.
 
 ## Milestone 1: decisions (agreed 2026-10-21)
 

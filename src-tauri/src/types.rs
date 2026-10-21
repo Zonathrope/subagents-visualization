@@ -3,6 +3,8 @@
 
 use serde::Serialize;
 
+use crate::stats::TranscriptStats;
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentStatus {
@@ -43,6 +45,9 @@ pub struct AgentNode {
     /// The subagent's own transcript (`.../subagents/agent-<id>.jsonl`), once linked.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcript_path: Option<String>,
+    /// Tokens, last activity and edited files, from the agent's own transcript.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stats: Option<TranscriptStats>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -94,6 +99,9 @@ pub struct SessionSummary {
     /// Timestamp (ms) of the newest record seen.
     pub last_activity: i64,
     pub transcript_path: String,
+    /// Stats for the main session's own work (edits it made itself, its tokens).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stats: Option<TranscriptStats>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::stats::TranscriptStats;
 use crate::types::{AgentNode, AgentStatus, GraphState, JobNode, SessionInfo, SessionSummary};
 
 #[derive(Default)]
@@ -13,6 +14,8 @@ pub struct GraphStore {
     /// Session id → main transcript path.
     session_transcripts: HashMap<String, String>,
     summaries: HashMap<String, SessionSummary>,
+    /// `Agent` tool_use id → stats from that subagent's transcript.
+    agent_stats: HashMap<String, TranscriptStats>,
 }
 
 impl GraphStore {
@@ -43,6 +46,7 @@ impl GraphStore {
             cwd: String::new(),
             last_activity: 0,
             transcript_path: path.to_owned(),
+            stats: None,
         });
         let before = entry.clone();
         if let Some(cwd) = cwd {
@@ -70,6 +74,27 @@ impl GraphStore {
         Some(session.clone())
     }
 
+    /// Records stats for a subagent. Returns the agent if it changed.
+    pub fn set_agent_stats(&mut self, tool_use_id: &str, stats: TranscriptStats) -> Option<AgentNode> {
+        self.agent_stats.insert(tool_use_id.to_owned(), stats.clone());
+        let agent = self.agents.get_mut(tool_use_id)?;
+        if agent.stats.as_ref() == Some(&stats) {
+            return None;
+        }
+        agent.stats = Some(stats);
+        Some(agent.clone())
+    }
+
+    /// Records stats for a session's main transcript. Returns the summary if it changed.
+    pub fn set_session_stats(&mut self, session_id: &str, stats: TranscriptStats) -> Option<SessionSummary> {
+        let summary = self.summaries.get_mut(session_id)?;
+        if summary.stats.as_ref() == Some(&stats) {
+            return None;
+        }
+        summary.stats = Some(stats);
+        Some(summary.clone())
+    }
+
     /// Records a subagent's transcript. Returns the agent if it changed.
     pub fn link_agent_transcript(&mut self, tool_use_id: &str, path: &str) -> Option<AgentNode> {
         self.agent_transcripts.insert(tool_use_id.to_owned(), path.to_owned());
@@ -94,6 +119,7 @@ impl GraphStore {
             agent.parent_id = agent.parent_id.or_else(|| existing.parent_id.clone());
         }
         agent.transcript_path = self.agent_transcripts.get(&agent.id).cloned();
+        agent.stats = self.agent_stats.get(&agent.id).cloned();
         self.agents.insert(agent.id.clone(), agent.clone());
         agent
     }
@@ -146,6 +172,7 @@ mod tests {
             end_time: None,
             agent_type: None,
             transcript_path: None,
+            stats: None,
         }
     }
 

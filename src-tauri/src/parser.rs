@@ -285,6 +285,7 @@ pub fn parse_agent_events(messages: &[Value]) -> (Vec<AgentNode>, Vec<Completion
                         end_time: None,
                         agent_type: str_field(input, &["subagent_type"]),
                         transcript_path: None,
+                        stats: None,
                     });
                 }
                 (Some("user"), Some("tool_result")) => {

@@ -1,6 +1,26 @@
 /** `stopped` is derived in the UI: still running per its transcript, but its session ended. */
 export type AgentStatus = 'running' | 'completed' | 'failed' | 'stopped'
 
+/** Mirrors src-tauri/src/stats.rs. Each API response is counted once. */
+export interface TokenTotals {
+  input: number
+  output: number
+  cacheWrite5m: number
+  cacheWrite1h: number
+  cacheRead: number
+}
+
+export interface TranscriptStats {
+  tokens: TokenTotals
+  /** Context size of the latest response. */
+  contextTokens: number
+  model?: string
+  /** Newest record timestamp (ms); 0 if none seen. */
+  lastActivity: number
+  /** Edited files relative to the repo root (worktree prefix stripped). */
+  editedFiles: string[]
+}
+
 export interface SessionInfo extends Record<string, unknown> {
   id: string
   pid: string
@@ -23,6 +43,7 @@ export interface AgentNode extends Record<string, unknown> {
   endTime?: number
   agentType?: string
   transcriptPath?: string
+  stats?: TranscriptStats
 }
 
 export interface JobNode extends Record<string, unknown> {
@@ -55,6 +76,7 @@ export interface SessionSummary extends Record<string, unknown> {
   cwd: string
   lastActivity: number
   transcriptPath: string
+  stats?: TranscriptStats
 }
 
 export interface GraphState {

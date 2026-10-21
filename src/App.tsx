@@ -5,9 +5,14 @@ import type { HostedTerminal } from './hooks/useTerminals'
 import AgentGraph from './components/AgentGraph'
 import DetailPanel from './components/DetailPanel'
 import TerminalDock from './components/TerminalDock'
-import type { DetailTarget, PromptRoute } from './components/DetailPanel'
+import Inbox from './components/Inbox'
+import SettingsMenu from './components/SettingsMenu'
+import type { DetailTarget, PromptRoute, SessionContext } from './components/DetailPanel'
 import type { GraphState } from './types'
 import { liveSessionIds, withDerivedStatus } from './liveness'
+import { useAttention } from './attention'
+import { computeOverlaps } from './overlap'
+import { useSettings } from './settings'
 import './App.css'
 
 interface Selection {
@@ -34,6 +39,7 @@ function resolveSelection(state: GraphState, nodeId: string | null): Selection |
         subtitle: a.agentType,
         status: a.status,
         transcriptPath: a.transcriptPath,
+        stats: a.stats,
       },
       sessionId: a.sessionId,
       agentId: file?.replace(/^agent-/, '').replace(/\.jsonl$/, ''),
@@ -50,6 +56,7 @@ function resolveSelection(state: GraphState, nodeId: string | null): Selection |
         subtitle: `v${s.version} · ${s.kind}`,
         status: s.status,
         transcriptPath: s.transcriptPath ?? state.summaries.find(x => x.id === s.id)?.transcriptPath,
+        stats: state.summaries.find(x => x.id === s.id)?.stats,
       },
       sessionId: s.id,
       live: true,
@@ -65,6 +72,7 @@ function resolveSelection(state: GraphState, nodeId: string | null): Selection |
         subtitle: s.lastActivity ? `last active ${new Date(s.lastActivity).toLocaleString()}` : undefined,
         status: 'ended',
         transcriptPath: s.transcriptPath,
+        stats: s.stats,
       },
       sessionId: s.id,
       live: false,
@@ -103,6 +111,19 @@ function promptRoute(
   }
 }
 
+/** Stopping goes through the parent session, like messages do, so it needs a hosted terminal. */
+function stopAction(
+  sel: Selection,
+  terminal: HostedTerminal | undefined,
+  send: (id: number, text: string) => Promise<void>,
+): (() => Promise<void>) | undefined {
+  if (sel.target.kind !== 'agent' || sel.target.status !== 'running' || !sel.live) return undefined
+  if (!terminal || !sel.agentId) return undefined
+  const agentId = sel.agentId
+  return () =>
+    send(terminal.id, `Stop agent ${agentId} now with TaskStop (task_id: "${agentId}"). Don't restart it.`)
+}
+
 const HISTORY_KEY = 'subagents.showHistory'
 
 function loadShowHistory(): boolean {
@@ -126,7 +147,15 @@ function useNow(intervalMs: number) {
 export default function App() {
   const { graphState: rawState, connected } = useAgentStream()
   const graphState = useMemo(() => withDerivedStatus(rawState), [rawState])
-  const now = useNow(30_000)
+  const now = useNow(15_000)
+  const { settings, update: updateSettings } = useSettings()
+  const attention = useAttention(graphState, now, settings.stuckMinutes, settings.sounds)
+  const attentionNodes = useMemo(() => new Set(attention.items.map(i => i.nodeId)), [attention.items])
+  const overlaps = useMemo(() => computeOverlaps(graphState), [graphState])
+  const cards = useMemo(
+    () => ({ overlaps: overlaps.byAgent, costEstimate: settings.costEstimate }),
+    [overlaps, settings.costEstimate],
+  )
   const [showHistory, setShowHistory] = useState(loadShowHistory)
   const toggleHistory = () =>
     setShowHistory(on => {
@@ -142,8 +171,25 @@ export default function App() {
   const [dockHeight, setDockHeight] = useState(320)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const close = useCallback(() => setSelectedId(null), [])
+  const { acknowledge } = attention
+  /** Opening a node also acknowledges its inbox items. */
+  const openNode = useCallback(
+    (nodeId: string) => {
+      setSelectedId(nodeId)
+      acknowledge(nodeId)
+    },
+    [acknowledge],
+  )
   const selection = resolveSelection(graphState, selectedId)
   const target = selection?.target ?? null
+  const hostTerminal = selection ? terminals.forSession(selection.sessionId) : undefined
+  const sessionContext: SessionContext | undefined =
+    selection && selection.target.kind === 'session'
+      ? {
+          agents: graphState.agents.filter(a => a.sessionId === selection.sessionId),
+          overlaps: overlaps.bySession.get(selection.sessionId) ?? [],
+        }
+      : undefined
 
   const run = (action: () => Promise<unknown>) =>
     action()
@@ -173,6 +219,7 @@ export default function App() {
           )}
         </div>
         <div className="header-actions">
+          <SettingsMenu settings={settings} onChange={updateSettings} />
           <button className="header-button" onClick={() => run(terminals.startSession)}>+ New session</button>
           <button
             className={`header-button ${showHistory ? 'header-button-on' : ''}`}
@@ -200,64 +247,32 @@ export default function App() {
           state={graphState}
           showHistory={showHistory}
           now={now}
+          cards={cards}
+          attention={attentionNodes}
           selectedId={target ? selectedId : null}
-          onSelect={setSelectedId}
+          onSelect={openNode}
         />
 
         {target ? (
           <DetailPanel
             key={selectedId}
             target={target}
-            prompt={promptRoute(selection!, terminals.forSession(selection!.sessionId), terminals.send)}
+            prompt={promptRoute(selection!, hostTerminal, terminals.send)}
+            session={sessionContext}
+            showCost={settings.costEstimate}
+            now={now}
+            onStop={stopAction(selection!, hostTerminal, terminals.send)}
+            onOpenNode={openNode}
             onClose={close}
           />
-        ) : graphState.jobs.length > 0 && (
-          <aside className="sidebar">
-            <div className="sidebar-title">Background jobs</div>
-            {graphState.jobs.map(job => (
-              <div key={job.id} className="sidebar-job">
-                <div className="sidebar-job-name">
-                  {job.name}
-                  <button
-                    className="sidebar-attach"
-                    title="Open this background session in a terminal (claude attach)"
-                    onClick={() => run(() => terminals.attach(job))}
-                  >
-                    Attach
-                  </button>
-                </div>
-                <div className="sidebar-job-status">
-                  <span
-                    className="status-badge"
-                    style={{ background: statusBg(job.status) }}
-                  >
-                    {job.status}
-                  </span>
-                  {job.inFlight.tasks > 0 && (
-                    <span className="status-badge" style={{ background: '#a855f7' }}>
-                      {job.inFlight.tasks} in-flight
-                    </span>
-                  )}
-                </div>
-                {job.detail && (
-                  <div className="sidebar-job-detail">{job.detail.slice(0, 120)}</div>
-                )}
-                {job.tokens > 0 && (
-                  <div className="sidebar-job-tokens">{fmtK(job.tokens)} tokens</div>
-                )}
-                {job.timeline.length > 0 && (
-                  <div className="timeline">
-                    {job.timeline.slice(-4).map((e, i) => (
-                      <div key={i} className="timeline-entry">
-                        <span className={`tl-dot tl-${e.state}`} />
-                        <span className="tl-text">{e.detail.slice(0, 70)}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </aside>
+        ) : (
+          <Inbox
+            items={attention.items}
+            jobs={graphState.jobs}
+            onOpen={openNode}
+            onDismiss={attention.dismiss}
+            onAttach={job => run(() => terminals.attach(job))}
+          />
         )}
       </div>
       {dockOpen && terminals.terminals.length > 0 && (
@@ -290,18 +305,4 @@ function Chip({ label, count, color, pulse }: { label: string; count: number; co
       <span className="chip-label">{label}</span>
     </div>
   )
-}
-
-function statusBg(s: string) {
-  const m: Record<string, string> = {
-    running: '#16a34a33',
-    done: '#64748b33',
-    blocked: '#d9770633',
-    failed: '#dc262633',
-  }
-  return m[s] ?? '#64748b33'
-}
-
-function fmtK(n: number) {
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 }

@@ -1,6 +1,8 @@
+mod open;
 mod parser;
 mod pty;
 mod state;
+mod stats;
 mod transcript;
 mod types;
 mod watcher;
@@ -62,6 +64,11 @@ fn pty_resize(id: u32, cols: u16, rows: u16, ptys: tauri::State<'_, PtyManager>)
 }
 
 #[tauri::command]
+fn open_file(app: tauri::AppHandle, path: String) -> Result<open::OpenOutcome, String> {
+    open::open_file(&app, &path)
+}
+
+#[tauri::command]
 fn pty_kill(id: u32, ptys: tauri::State<'_, PtyManager>) -> Result<(), String> {
     ptys.kill(id)
 }
@@ -83,6 +90,8 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(PtyManager::default())
         .setup(|app| {
             let store = SharedStore::default();
@@ -102,7 +111,8 @@ pub fn run() {
             pty_spawn,
             pty_write,
             pty_resize,
-            pty_kill
+            pty_kill,
+            open_file
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

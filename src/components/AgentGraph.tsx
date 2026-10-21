@@ -26,7 +26,18 @@ const nodeTypes = {
  * Live sessions, jobs and their agents. With `showHistory`, sessions that have ended
  * (within the backend's history window) are added as faded nodes with their agents.
  */
-function buildElements(state: GraphState, showHistory: boolean, now: number): { nodes: Node[]; edges: Edge[] } {
+interface CardOptions {
+  /** Agent id → files it shares with another agent or the main session. */
+  overlaps: Map<string, string[]>
+  costEstimate: boolean
+}
+
+function buildElements(
+  state: GraphState,
+  showHistory: boolean,
+  now: number,
+  cards: CardOptions,
+): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = []
   const edges: Edge[] = []
 
@@ -96,7 +107,7 @@ function buildElements(state: GraphState, showHistory: boolean, now: number): { 
     nodes.push({
       id: `agent-${a.id}`,
       type: 'agent',
-      data: a,
+      data: { ...a, overlapFiles: cards.overlaps.get(a.id), showCost: cards.costEstimate },
       position: { x: 0, y: 0 },
       className: finishedLongAgo ? 'dimmed' : undefined,
     })
@@ -119,12 +130,17 @@ export default function AgentGraph({
   state,
   showHistory,
   now,
+  cards,
+  attention,
   selectedId,
   onSelect,
 }: {
   state: GraphState
   showHistory: boolean
   now: number
+  cards: CardOptions
+  /** Nodes with open inbox items get a highlight. */
+  attention: Set<string>
   selectedId: string | null
   onSelect: (nodeId: string) => void
 }) {
@@ -135,8 +151,8 @@ export default function AgentGraph({
   const rfInstance = useRef<any>(null)
 
   const { nodes: nextNodes, edges: nextEdges } = useMemo(
-    () => buildElements(state, showHistory, now),
-    [state, showHistory, now],
+    () => buildElements(state, showHistory, now, cards),
+    [state, showHistory, now, cards],
   )
 
   useEffect(() => {
@@ -145,9 +161,15 @@ export default function AgentGraph({
       prevRef.current = key
       setNeedsFit(true)
     }
-    setNodes(nextNodes.map(n => ({ ...n, selected: n.id === selectedId })))
+    setNodes(
+      nextNodes.map(n => ({
+        ...n,
+        selected: n.id === selectedId,
+        className: [n.className, attention.has(n.id) && 'attention'].filter(Boolean).join(' ') || undefined,
+      })),
+    )
     setEdges(nextEdges)
-  }, [nextNodes, nextEdges, selectedId, setNodes, setEdges])
+  }, [nextNodes, nextEdges, selectedId, attention, setNodes, setEdges])
 
   useEffect(() => {
     if (needsFit && rfInstance.current) {

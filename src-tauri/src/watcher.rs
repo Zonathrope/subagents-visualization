@@ -11,6 +11,7 @@ use notify::{RecursiveMode, Watcher};
 
 use crate::parser::{self, TranscriptTail};
 use crate::state::GraphStore;
+use crate::stats::StatsTracker;
 use crate::types::GraphEvent;
 
 /// Also the cadence for retrying directories that don't exist yet.
@@ -149,7 +150,15 @@ pub fn spawn(
     emit: impl Fn(GraphEvent) + Send + 'static,
 ) {
     thread::spawn(move || {
-        Worker { dirs, store, emit, tail: TranscriptTail::default(), sub_links: HashMap::new() }.run()
+        Worker {
+            dirs,
+            store,
+            emit,
+            tail: TranscriptTail::default(),
+            sub_links: HashMap::new(),
+            trackers: HashMap::new(),
+        }
+        .run()
     });
 }
 
@@ -160,6 +169,7 @@ struct Worker<E> {
     tail: TranscriptTail,
     /// Subagent transcript → spawning `Agent` tool_use id, cached once the meta file is read.
     sub_links: HashMap<PathBuf, String>,
+    trackers: HashMap<PathBuf, StatsTracker>,
 }
 
 impl<E: Fn(GraphEvent)> Worker<E> {
@@ -276,7 +286,11 @@ impl<E: Fn(GraphEvent)> Worker<E> {
                 new_lines = !lines.is_empty();
                 if new_lines {
                     let (cwd, last) = parser::transcript_activity(&lines);
-                    if let Some(data) = store.update_summary(&session_id, &path_str, cwd, last) {
+                    let mut summary = store.update_summary(&session_id, &path_str, cwd, last);
+                    let tracker = self.trackers.entry(path.clone()).or_default();
+                    tracker.feed(&lines);
+                    summary = store.set_session_stats(&session_id, tracker.snapshot()).or(summary);
+                    if let Some(data) = summary {
                         events.push(GraphEvent::SessionSummary { data });
                     }
                 }
@@ -293,6 +307,15 @@ impl<E: Fn(GraphEvent)> Worker<E> {
                     }
                 }
                 new_lines = !lines.is_empty();
+                if new_lines {
+                    let tracker = self.trackers.entry(path.clone()).or_default();
+                    tracker.feed(&lines);
+                    if let Some(id) = &parent {
+                        if let Some(data) = store.set_agent_stats(id, tracker.snapshot()) {
+                            events.push(GraphEvent::AgentUpdate { data });
+                        }
+                    }
+                }
                 apply_agent_events(&mut store, &lines, parent, &mut events);
             }
         }

@@ -1,5 +1,9 @@
 import { Handle, Position } from '@xyflow/react'
 import type { AgentNode, JobNode, SessionInfo, SessionSummary } from '../types'
+import { estimateCost, formatUsd } from '../pricing'
+
+/** Agent card data: the agent plus what the graph computed about it. */
+export type AgentCardData = AgentNode & { overlapFiles?: string[]; showCost?: boolean }
 
 function elapsed(startMs: number, endMs?: number): string {
   const ms = (endMs ?? Date.now()) - startMs
@@ -124,7 +128,10 @@ export function JobNodeComponent({ data }: { data: JobNode }) {
 
 // ── Agent node ────────────────────────────────────────────────────────────────
 
-export function AgentNodeComponent({ data }: { data: AgentNode }) {
+export function AgentNodeComponent({ data }: { data: AgentCardData }) {
+  const stats = data.stats
+  const cost = data.showCost ? estimateCost(stats) : undefined
+  const overlaps = data.overlapFiles ?? []
   return (
     <div className="node node-agent">
       <Handle type="target" position={Position.Top} />
@@ -133,6 +140,14 @@ export function AgentNodeComponent({ data }: { data: AgentNode }) {
         <StatusDot status={data.status} />
         <span className="node-kind">AGENT</span>
         {data.agentType && <span className="badge">{data.agentType}</span>}
+        {overlaps.length > 0 && (
+          <span
+            className="badge badge-overlap"
+            title={`Also edited by another agent or the main session:\n${overlaps.join('\n')}`}
+          >
+            ⚠ {overlaps.length} overlap{overlaps.length > 1 ? 's' : ''}
+          </span>
+        )}
       </div>
       <div className="node-title" title={data.description}>
         {data.description.slice(0, 80)}{data.description.length > 80 ? '…' : ''}
@@ -141,6 +156,20 @@ export function AgentNodeComponent({ data }: { data: AgentNode }) {
         <span>{elapsed(data.startTime, data.endTime)}</span>
         <span className="dot">·</span>
         <span>{data.status}</span>
+        {stats && stats.tokens.output > 0 && (
+          <>
+            <span className="dot">·</span>
+            <span title="Current context size · total output tokens">
+              {fmt(stats.contextTokens)} ctx · {fmt(stats.tokens.output)} out
+            </span>
+          </>
+        )}
+        {cost !== undefined && (
+          <>
+            <span className="dot">·</span>
+            <span title="Estimated at API list prices">~{formatUsd(cost)}</span>
+          </>
+        )}
       </div>
     </div>
   )
