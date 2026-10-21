@@ -67,9 +67,38 @@ fn claude_command(args: &[&str]) -> CommandBuilder {
     #[cfg(not(windows))]
     let mut cmd = CommandBuilder::new("claude");
     cmd.args(args);
+    strip_parent_session_env(&mut cmd);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd
+}
+
+/// Variables a running Claude Code session sets for its own child processes. If this app
+/// was launched from inside a session (e.g. `npm run dev` from Claude's shell), a `claude`
+/// started with them believes it is that session's child: it doesn't register under
+/// `sessions/` or write a normal transcript, so it never shows up in the graph.
+/// User configuration (`CLAUDE_CONFIG_DIR`, auth, model settings) is left alone.
+const PARENT_SESSION_ENV: &[&str] = &[
+    // Marks processes started by an agent; makes `claude` run as a non-interactive child.
+    "AI_AGENT",
+    "CLAUDECODE",
+    "CLAUDE_PID",
+    "CLAUDE_EFFORT",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "TERM_PROGRAM",
+    "TERM_PROGRAM_VERSION",
+];
+
+fn strip_parent_session_env(cmd: &mut CommandBuilder) {
+    for key in PARENT_SESSION_ENV {
+        cmd.env_remove(key);
+    }
 }
 
 fn build_command(request: &SpawnRequest) -> Result<CommandBuilder, String> {
@@ -209,6 +238,18 @@ mod tests {
     }
 
     #[test]
+    fn strips_parent_session_env_but_keeps_user_config() {
+        let mut cmd = CommandBuilder::new("claude");
+        cmd.env("CLAUDE_CODE_CHILD_SESSION", "1");
+        cmd.env("CLAUDE_CODE_SESSION_ID", "parent");
+        cmd.env("CLAUDE_CONFIG_DIR", "D:/claude");
+        strip_parent_session_env(&mut cmd);
+        assert_eq!(cmd.get_env("CLAUDE_CODE_CHILD_SESSION"), None);
+        assert_eq!(cmd.get_env("CLAUDE_CODE_SESSION_ID"), None);
+        assert_eq!(cmd.get_env("CLAUDE_CONFIG_DIR").and_then(|v| v.to_str()), Some("D:/claude"));
+    }
+
+    #[test]
     fn deserializes_camel_case_requests() {
         let r: SpawnRequest =
             serde_json::from_str(r#"{"kind":"new","cwd":"C:/x","sessionId":"s"}"#).unwrap();
@@ -247,6 +288,63 @@ mod tests {
         let text = out.join().unwrap();
         assert!(status.success(), "exit {status:?}, output: {text:?}");
         assert!(text.contains("Claude Code"), "output: {text:?}");
+    }
+
+    /// Starts a real interactive session (from wherever the test runs, possibly inside
+    /// another Claude session) and checks it registers itself under `sessions/`.
+    #[test]
+    #[ignore = "starts a real Claude Code session"]
+    fn new_session_registers_itself() {
+        let session_id = "00000000-0000-4000-8000-0000000000aa";
+        let cwd = std::env::current_dir().unwrap().parent().unwrap().to_string_lossy().into_owned();
+        let cmd = build_command(&SpawnRequest::New { cwd, session_id: session_id.into() }).unwrap();
+        let pair = native_pty_system()
+            .openpty(PtySize { rows: 30, cols: 120, pixel_width: 0, pixel_height: 0 })
+            .unwrap();
+        let mut child = pair.slave.spawn_command(cmd).unwrap();
+        drop(pair.slave);
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let mut writer = pair.master.take_writer().unwrap();
+        let screen = std::sync::Arc::new(Mutex::new(Vec::<u8>::new()));
+        let screen_w = screen.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            let mut trusted = false;
+            while let Ok(n) = reader.read(&mut buf) {
+                if n == 0 { break; }
+                let mut screen = screen_w.lock().unwrap();
+                screen.extend_from_slice(&buf[..n]);
+                if buf[..n].windows(4).any(|w| w == b"\x1b[6n") {
+                    let _ = writer.write_all(b"\x1b[1;1R");
+                }
+                // Answer the folder-trust prompt: move to "Yes, I trust this folder", confirm.
+                // (Words are separated by cursor moves, not spaces, so match single words.)
+                let text = String::from_utf8_lossy(&screen);
+                if !trusted && text.contains("trust") && text.contains("confirm") {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    let _ = writer.write_all(b"\x1b[B");
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    let _ = writer.write_all(b"\r");
+                    trusted = true;
+                }
+            }
+        });
+
+        let sessions = std::path::PathBuf::from(std::env::var("USERPROFILE").unwrap()).join(".claude/sessions");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut found = false;
+        while std::time::Instant::now() < deadline && !found {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            found = std::fs::read_dir(&sessions).unwrap().filter_map(|e| e.ok()).any(|e| {
+                std::fs::read_to_string(e.path()).is_ok_and(|s| s.contains(session_id))
+            });
+        }
+        child.kill().unwrap();
+        drop(pair.master);
+        if let Ok(out) = std::env::var("SCREEN_DUMP") {
+            std::fs::write(out, &*screen.lock().unwrap()).unwrap();
+        }
+        assert!(found, "no sessions/*.json registered for {session_id}");
     }
 
     #[test]
