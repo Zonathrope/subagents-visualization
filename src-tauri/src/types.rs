@@ -110,6 +110,9 @@ pub struct GraphState {
     pub agents: Vec<AgentNode>,
     pub jobs: Vec<JobNode>,
     pub summaries: Vec<SessionSummary>,
+    /// False until the startup scan has finished. Changes seen before then are history
+    /// being loaded, not live transitions.
+    pub ready: bool,
 }
 
 /// Incremental update pushed to the frontend on the `graph-event` channel.
@@ -123,6 +126,8 @@ pub enum GraphEvent {
     JobUpdate { data: JobNode },
     JobRemoved { id: String },
     SessionSummary { data: SessionSummary },
+    /// The startup scan has finished.
+    Ready,
     /// New lines were appended to a transcript; open detail views should reload it.
     TranscriptChanged { path: String },
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import type { Settings } from '../settings'
 import { playUrgent } from '../sound'
 
@@ -10,7 +11,15 @@ export default function SettingsMenu({
   onChange: (patch: Partial<Settings>) => void
 }) {
   const [open, setOpen] = useState(false)
+  const [autostart, setAutostart] = useState<boolean | null>(null)
   const ref = useRef<HTMLDivElement>(null)
+
+  // Start-at-login lives in the OS, not local storage; read it when the menu opens.
+  useEffect(() => {
+    if (open) void invoke<boolean>('get_autostart').then(setAutostart).catch(() => setAutostart(null))
+  }, [open])
+  const toggleAutostart = (enable: boolean) =>
+    void invoke<boolean>('set_autostart', { enable }).then(setAutostart).catch(e => alert(`${e}`))
 
   useEffect(() => {
     if (!open) return
@@ -51,6 +60,15 @@ export default function SettingsMenu({
               onChange={e => onChange({ costEstimate: e.target.checked })}
             />
             <span>Show cost estimates (API list prices)</span>
+          </label>
+          <label className="settings-row">
+            <input
+              type="checkbox"
+              disabled={autostart === null}
+              checked={autostart ?? false}
+              onChange={e => toggleAutostart(e.target.checked)}
+            />
+            <span>Start at login (closing the window keeps it in the tray)</span>
           </label>
         </div>
       )}

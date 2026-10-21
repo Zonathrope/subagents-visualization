@@ -45,6 +45,10 @@ export function useAttention(state: GraphState, now: number, stuckMinutes: numbe
   const seen = useRef<Seen | null>(null)
 
   useEffect(() => {
+    // While the backend is still loading history, agents can appear "running" and then
+    // finish (spawn and completion may sit in different transcripts). Wait for the scan
+    // to end and take that as the baseline.
+    if (!state.ready) return
     const stuckMs = stuckMinutes * 60_000
     const prev = seen.current
     const initial = prev === null

@@ -108,5 +108,19 @@ repo root (`.claude/worktrees/<name>/` stripped).
 **Settings.** Small settings popover (stuck threshold, sounds, cost estimate), stored locally. Sounds are
 generated in-app.
 
-**Later:** combined per-session diffs, re-run with a tweak, search across transcripts, tray icon,
-mini window, start at login.
+## Milestone 2 (built 2026-10-21)
+
+- **Tray icon**: tooltip with running / needs-you counts, amber dot on the icon while something needs
+  attention; menu with Show, Mini window, Start at login, Quit. Closing the main window hides it to the
+  tray (hosted sessions keep running, alerts keep coming); quit from the tray.
+- **Start at login**: in the tray menu and the settings popover.
+- **Mini window**: compact, always on top; mirrors the main window's inbox (dismissals sync both ways,
+  only the main window plays sounds) and lists running agents; clicking opens the node in the main window.
+- **Search**: header box, case-insensitive over prompts, replies, tool inputs and results in the history
+  window (24 h); newest first, max 200 hits.
+- **Combined changes**: a session's Changes tab shows its own and all its agents' edits, labeled by
+  author, grouped by repo-relative file.
+- **Re-run with a tweak**: edit an agent's prompt; the hosting parent session starts a new agent with it.
+
+Also fixed: the inbox no longer reports history loaded at startup as new events (it waits for the
+backend's startup scan to finish).

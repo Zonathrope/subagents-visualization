@@ -195,6 +195,7 @@ impl<E: Fn(GraphEvent)> Worker<E> {
             self.dirs.projects.clone(),
         ];
         let mut hot: HashMap<Target, Instant> = HashMap::new();
+        let mut ready = false;
 
         loop {
             let mut pending: HashSet<Target> = HashSet::new();
@@ -227,6 +228,13 @@ impl<E: Fn(GraphEvent)> Worker<E> {
                 if self.handle(&target) && target.transcript_path().is_some() {
                     hot.insert(target, now);
                 }
+            }
+
+            // The first pass processed everything the startup scan found.
+            if !ready {
+                ready = true;
+                self.store.lock().unwrap().mark_ready();
+                (self.emit)(GraphEvent::Ready);
             }
         }
     }

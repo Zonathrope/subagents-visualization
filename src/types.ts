@@ -84,6 +84,8 @@ export interface GraphState {
   agents: AgentNode[]
   jobs: JobNode[]
   summaries: SessionSummary[]
+  /** False until the backend's startup scan has finished. */
+  ready: boolean
 }
 
 export type WsMessage =
@@ -94,6 +96,7 @@ export type WsMessage =
   | { type: 'job_update'; data: JobNode }
   | { type: 'job_removed'; id: string }
   | { type: 'session_summary'; data: SessionSummary }
+  | { type: 'ready' }
   | { type: 'transcript_changed'; path: string }
 
 // ── Transcript detail view (mirrors src-tauri/src/transcript.rs) ──────────────

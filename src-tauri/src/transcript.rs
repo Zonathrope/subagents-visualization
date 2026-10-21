@@ -57,6 +57,44 @@ pub struct ToolOutput {
     pub is_error: bool,
 }
 
+/// One file edit within a session, from the main session or one of its agents.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionChange {
+    /// Agent tool_use id, or `None` for the main session's own edit.
+    pub agent_id: Option<String>,
+    pub actor: String,
+    /// Repo-relative path, so worktree copies group with the original file.
+    pub file: String,
+    pub call: ToolCall,
+}
+
+const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
+
+/// All edits across a session's transcripts, oldest first.
+pub fn session_changes(sources: &[(std::path::PathBuf, Option<(String, String)>)]) -> Vec<SessionChange> {
+    let mut changes = Vec::new();
+    for (path, agent) in sources {
+        let Ok(view) = load(path) else { continue };
+        for item in view.items {
+            let Item::Tool(call) = item else { continue };
+            if !EDIT_TOOLS.contains(&call.name.as_str()) {
+                continue;
+            }
+            let raw = call.input.get("file_path").or_else(|| call.input.get("notebook_path")).and_then(Value::as_str);
+            let Some(raw) = raw else { continue };
+            changes.push(SessionChange {
+                agent_id: agent.as_ref().map(|(id, _)| id.clone()),
+                actor: agent.as_ref().map_or_else(|| "Main session".to_owned(), |(_, d)| d.clone()),
+                file: crate::stats::repo_relative(raw, None),
+                call,
+            });
+        }
+    }
+    changes.sort_by(|a, b| a.call.at.cmp(&b.call.at));
+    changes
+}
+
 pub fn load(path: &Path) -> std::io::Result<TranscriptView> {
     let mut file = File::open(path)?;
     let size = file.metadata()?.len();

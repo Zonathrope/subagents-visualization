@@ -14,6 +14,10 @@ changes to a React + React Flow UI.
   background sessions. Sessions hosted in the app can be prompted from the detail panel, and so can
   their subagents (the message is relayed by the parent session with `SendMessage`).
   Sessions running in other terminals are view-only.
+- **Inbox**: what needs you (waiting sessions, blocked jobs, failed/finished/stuck agents), with a sound.
+- **Health and overlap**: tokens per agent, optional cost estimate, warnings when agents edit the same files.
+- **Search** across recent transcripts, **combined changes** per session, **re-run** an agent with an edited prompt.
+- **Tray icon, mini window, start at login**: closing the window keeps the app in the tray.
 
 ## What it watches
 

@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { useTranscript } from '../hooks/useTranscript'
+import { useSessionChanges } from '../hooks/useSessionChanges'
 import type { AgentNode, ToolCall, TranscriptItem, TranscriptStats } from '../types'
 import type { FileOverlap } from '../overlap'
 import { estimateCost, formatUsd } from '../pricing'
@@ -12,6 +13,8 @@ export interface DetailTarget {
   status: string
   transcriptPath?: string
   stats?: TranscriptStats
+  /** For agents: the prompt it was started with (for re-running). */
+  prompt?: string
 }
 
 /** Whether, and how, the user can prompt the selected session or agent. */
@@ -21,8 +24,11 @@ export type PromptRoute =
 
 /** Session-only context: its agents for the timeline, and files edited by several actors. */
 export interface SessionContext {
+  id: string
   agents: AgentNode[]
   overlaps: FileOverlap[]
+  /** Transcripts whose changes should refresh the combined Changes view. */
+  watchPaths: string[]
 }
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
@@ -36,6 +42,7 @@ export default function DetailPanel({
   showCost,
   now,
   onStop,
+  onRerun,
   onOpenNode,
   onClose,
 }: {
@@ -46,12 +53,16 @@ export default function DetailPanel({
   now: number
   /** Present only when stopping is possible (running agent in an app-hosted session). */
   onStop?: () => Promise<void>
+  /** Present only when re-running is possible (agent in a live app-hosted session). */
+  onRerun?: (prompt: string) => Promise<void>
   onOpenNode: (nodeId: string) => void
   onClose: () => void
 }) {
   const { view, error } = useTranscript(target.transcriptPath)
   const [tab, setTab] = useState<Tab>('activity')
   const [stopState, setStopState] = useState<string | null>(null)
+  const [rerunOpen, setRerunOpen] = useState(false)
+  const combined = useSessionChanges(session?.id, session?.watchPaths ?? [])
 
   useEffect(() => {
     // Escape also interrupts Claude in a terminal, so ignore it while typing anywhere.
@@ -79,6 +90,16 @@ export default function DetailPanel({
     return last?.kind === 'assistant' ? last.text : undefined
   }, [target.kind, target.status, view])
 
+  // Sessions show every edit in the session (their own and their agents'), labeled by author.
+  const entries: ChangeEntry[] | null = session
+    ? combined &&
+      combined.map(c => ({
+        call: c.call,
+        file: c.file,
+        actor: c.agentId ? { label: c.actor, nodeId: `agent-${c.agentId}` } : { label: c.actor, nodeId: '' },
+      }))
+    : edits.map(call => ({ call }))
+
   const stats = target.stats
   const cost = showCost ? estimateCost(stats) : undefined
 
@@ -99,6 +120,11 @@ export default function DetailPanel({
         <div className="detail-heading">
           <span className={`detail-kind detail-kind-${target.kind}`}>{target.kind}</span>
           <span className="detail-status">{target.status}</span>
+          {onRerun && (
+            <button className="detail-rerun" onClick={() => setRerunOpen(o => !o)} title="Edit the prompt and start it again">
+              Re-run…
+            </button>
+          )}
           {onStop && (
             <button className="detail-stop" onClick={() => void stop()} title="Ask the parent session to stop this agent">
               Stop
@@ -121,7 +147,7 @@ export default function DetailPanel({
             Activity
           </button>
           <button className={tab === 'changes' ? 'active' : ''} onClick={() => setTab('changes')}>
-            Changes{edits.length > 0 && <span className="tab-count">{edits.length}</span>}
+            Changes{(entries?.length ?? 0) > 0 && <span className="tab-count">{entries!.length}</span>}
             {session && session.overlaps.length > 0 && (
               <span className="tab-count tab-warn">⚠ {session.overlaps.length}</span>
             )}
@@ -134,8 +160,26 @@ export default function DetailPanel({
         </nav>
       </header>
 
+      {rerunOpen && onRerun && (
+        <RerunEditor
+          initial={target.prompt ?? ''}
+          onCancel={() => setRerunOpen(false)}
+          onStart={async text => {
+            await onRerun(text)
+            setRerunOpen(false)
+            setStopState('Re-run requested from the parent session')
+          }}
+        />
+      )}
+
       {tab === 'timeline' && session ? (
         <Timeline agents={session.agents} now={now} onOpenNode={onOpenNode} />
+      ) : tab === 'changes' && session ? (
+        entries ? (
+          <Changes entries={entries} overlaps={session.overlaps} onOpenNode={onOpenNode} />
+        ) : (
+          <div className="detail-empty">Loading changes…</div>
+        )
       ) : !target.transcriptPath ? (
         <div className="detail-empty">No transcript found for this {target.kind} yet.</div>
       ) : error ? (
@@ -145,11 +189,41 @@ export default function DetailPanel({
       ) : tab === 'activity' ? (
         <Activity items={view.items} truncated={view.truncated} result={result} />
       ) : (
-        <Changes edits={edits} overlaps={session?.overlaps ?? []} onOpenNode={onOpenNode} />
+        <Changes entries={entries ?? []} overlaps={[]} onOpenNode={onOpenNode} />
       )}
 
       <PromptBox route={prompt} placeholder={target.kind === 'agent' ? 'Message this agent…' : 'Prompt this session…'} />
     </aside>
+  )
+}
+
+/** Edit an agent's original prompt and ask the parent session to start it again. */
+function RerunEditor({
+  initial,
+  onStart,
+  onCancel,
+}: {
+  initial: string
+  onStart: (prompt: string) => Promise<void>
+  onCancel: () => void
+}) {
+  const [text, setText] = useState(initial)
+  const [error, setError] = useState<string | null>(null)
+  return (
+    <div className="rerun">
+      <div className="item-label">Re-run with this prompt</div>
+      <textarea value={text} onChange={e => setText(e.target.value)} rows={8} />
+      <div className="prompt-meta">
+        <span>{error ?? 'The parent session starts a new agent with it'}</span>
+        <button className="link-button" onClick={onCancel}>Cancel</button>
+        <button
+          disabled={!text.trim()}
+          onClick={() => onStart(text.trim()).catch(e => setError(`Failed: ${e}`))}
+        >
+          Start
+        </button>
+      </div>
+    </div>
   )
 }
 
@@ -362,26 +436,37 @@ function ToolInput({ call }: { call: ToolCall }) {
 
 // ── Changes ───────────────────────────────────────────────────────────────────
 
+/** One edit to show. In a session's combined view it carries who made it. */
+export interface ChangeEntry {
+  call: ToolCall
+  /** Grouping key; repo-relative in the combined view so worktree copies group together. */
+  file?: string
+  actor?: { label: string; nodeId: string }
+}
+
 function Changes({
-  edits,
+  entries,
   overlaps,
   onOpenNode,
 }: {
-  edits: ToolCall[]
+  entries: ChangeEntry[]
   overlaps: FileOverlap[]
   onOpenNode: (nodeId: string) => void
 }) {
   const files = useMemo(() => {
-    const byFile = new Map<string, { adds: number; dels: number; count: number }>()
-    for (const e of edits) {
-      const d = diffFor(e)
-      const f = byFile.get(d.file) ?? { adds: 0, dels: 0, count: 0 }
-      byFile.set(d.file, { adds: f.adds + d.adds, dels: f.dels + d.dels, count: f.count + 1 })
+    const byFile = new Map<string, { adds: number; dels: number; path: string; actors: Set<string> }>()
+    for (const e of entries) {
+      const d = diffFor(e.call)
+      const key = e.file ?? d.file
+      const f = byFile.get(key) ?? { adds: 0, dels: 0, path: d.file, actors: new Set<string>() }
+      if (e.actor) f.actors.add(e.actor.label)
+      // Open the most recent copy (e.g. the worktree an agent last wrote to).
+      byFile.set(key, { ...f, adds: f.adds + d.adds, dels: f.dels + d.dels, path: d.file })
     }
     return [...byFile.entries()]
-  }, [edits])
+  }, [entries])
 
-  if (edits.length === 0 && overlaps.length === 0) return <div className="detail-empty">No file changes.</div>
+  if (entries.length === 0 && overlaps.length === 0) return <div className="detail-empty">No file changes.</div>
 
   return (
     <div className="detail-body">
@@ -402,29 +487,40 @@ function Changes({
           ))}
         </div>
       )}
-      {edits.length > 0 && <div className="files-summary">
-        {files.map(([file, s]) => (
-          <div key={file} className="files-summary-row" title={file}>
-            <span className="files-summary-path">{shortPath(file)}</span>
-            <span className="diffstat-add">+{s.adds}</span>
-            <span className="diffstat-del">−{s.dels}</span>
-            <OpenFileButton path={file} />
-          </div>
-        ))}
-      </div>}
-      {edits.map(e => {
-        const diff = diffFor(e)
+      {entries.length > 0 && (
+        <div className="files-summary">
+          {files.map(([key, s]) => (
+            <div key={key} className="files-summary-row" title={s.path}>
+              <span className="files-summary-path">{shortPath(key)}</span>
+              {s.actors.size > 1 && <span className="files-summary-actors">{s.actors.size} authors</span>}
+              <span className="diffstat-add">+{s.adds}</span>
+              <span className="diffstat-del">−{s.dels}</span>
+              <OpenFileButton path={s.path} />
+            </div>
+          ))}
+        </div>
+      )}
+      {entries.map(e => {
+        const diff = diffFor(e.call)
         return (
-          <div key={e.id} className="change">
+          <div key={e.call.id} className="change">
             <div className="change-header" title={diff.file}>
-              <span className="tool-name">{e.name}</span>
-              <span className="change-path">{shortPath(diff.file)}</span>
+              <span className="tool-name">{e.call.name}</span>
+              <span className="change-path">{shortPath(e.file ?? diff.file)}</span>
+              {e.actor &&
+                (e.actor.nodeId ? (
+                  <button className="change-actor" onClick={() => onOpenNode(e.actor!.nodeId)} title={e.actor.label}>
+                    {e.actor.label}
+                  </button>
+                ) : (
+                  <span className="change-actor change-actor-main">{e.actor.label}</span>
+                ))}
               <DiffStat diff={diff} />
-              <Time at={e.at} />
+              <Time at={e.call.at} />
               <OpenFileButton path={diff.file} />
             </div>
             <DiffView diff={diff} />
-            {e.result?.isError && <pre className="tool-result tool-result-error">{e.result.text}</pre>}
+            {e.call.result?.isError && <pre className="tool-result tool-result-error">{e.call.result.text}</pre>}
           </div>
         )
       })}

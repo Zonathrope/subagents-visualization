@@ -1,5 +1,8 @@
 use std::collections::HashMap;
 
+use std::path::PathBuf;
+
+use crate::search::SearchSource;
 use crate::stats::TranscriptStats;
 use crate::types::{AgentNode, AgentStatus, GraphState, JobNode, SessionInfo, SessionSummary};
 
@@ -16,6 +19,7 @@ pub struct GraphStore {
     summaries: HashMap<String, SessionSummary>,
     /// `Agent` tool_use id → stats from that subagent's transcript.
     agent_stats: HashMap<String, TranscriptStats>,
+    ready: bool,
 }
 
 impl GraphStore {
@@ -25,7 +29,34 @@ impl GraphStore {
             agents: self.agents.values().cloned().collect(),
             jobs: self.jobs.values().cloned().collect(),
             summaries: self.summaries.values().cloned().collect(),
+            ready: self.ready,
         }
+    }
+
+    pub fn mark_ready(&mut self) {
+        self.ready = true;
+    }
+
+    /// Every transcript the app knows about (the history window), for search.
+    pub fn search_sources(&self) -> Vec<(PathBuf, SearchSource)> {
+        let sessions = self.session_transcripts.iter().map(|(id, path)| {
+            (PathBuf::from(path), SearchSource::Session { id: id.clone() })
+        });
+        let agents = self.agent_transcripts.iter().map(|(id, path)| {
+            (PathBuf::from(path), SearchSource::Agent { id: id.clone() })
+        });
+        sessions.chain(agents).collect()
+    }
+
+    /// A session's main transcript plus those of all its agents (nested ones included),
+    /// each with the agent's `(id, description)`, or `None` for the main session.
+    pub fn session_sources(&self, session_id: &str) -> Vec<(PathBuf, Option<(String, String)>)> {
+        let main = self.session_transcripts.get(session_id).map(|p| (PathBuf::from(p), None));
+        let agents = self.agents.values().filter(|a| a.session_id == session_id).filter_map(|a| {
+            let path = a.transcript_path.as_ref()?;
+            Some((PathBuf::from(path), Some((a.id.clone(), a.description.clone()))))
+        });
+        main.into_iter().chain(agents).collect()
     }
 
     pub fn has_session_transcript(&self, session_id: &str) -> bool {

@@ -31,6 +31,9 @@ function applyMessage(state: GraphState, msg: WsMessage): GraphState {
       return { ...state, summaries: [...summaries, msg.data] }
     }
 
+    case 'ready':
+      return { ...state, ready: true }
+
     case 'job_removed':
       return { ...state, jobs: state.jobs.filter(j => j.id !== msg.id) }
 
@@ -39,7 +42,7 @@ function applyMessage(state: GraphState, msg: WsMessage): GraphState {
   }
 }
 
-const EMPTY: GraphState = { sessions: [], agents: [], jobs: [], summaries: [] }
+const EMPTY: GraphState = { sessions: [], agents: [], jobs: [], summaries: [], ready: false }
 
 export function useAgentStream() {
   const [graphState, setGraphState] = useState<GraphState>(EMPTY)

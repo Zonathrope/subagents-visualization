@@ -6,13 +6,18 @@ import AgentGraph from './components/AgentGraph'
 import DetailPanel from './components/DetailPanel'
 import TerminalDock from './components/TerminalDock'
 import Inbox from './components/Inbox'
+import SearchResults from './components/SearchResults'
 import SettingsMenu from './components/SettingsMenu'
 import type { DetailTarget, PromptRoute, SessionContext } from './components/DetailPanel'
-import type { GraphState } from './types'
+import type { AgentNode, GraphState } from './types'
 import { liveSessionIds, withDerivedStatus } from './liveness'
 import { useAttention } from './attention'
 import { computeOverlaps } from './overlap'
 import { useSettings } from './settings'
+import { usePublishInbox } from './inboxSync'
+import { URGENT } from './attention'
+import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import './App.css'
 
 interface Selection {
@@ -40,6 +45,7 @@ function resolveSelection(state: GraphState, nodeId: string | null): Selection |
         status: a.status,
         transcriptPath: a.transcriptPath,
         stats: a.stats,
+        prompt: a.prompt,
       },
       sessionId: a.sessionId,
       agentId: file?.replace(/^agent-/, '').replace(/\.jsonl$/, ''),
@@ -124,6 +130,23 @@ function stopAction(
     send(terminal.id, `Stop agent ${agentId} now with TaskStop (task_id: "${agentId}"). Don't restart it.`)
 }
 
+/** Re-running also goes through the parent session; it needs a live, app-hosted session. */
+function rerunAction(
+  sel: Selection,
+  agent: AgentNode | undefined,
+  terminal: HostedTerminal | undefined,
+  send: (id: number, text: string) => Promise<void>,
+): ((prompt: string) => Promise<void>) | undefined {
+  if (sel.target.kind !== 'agent' || !sel.live || !terminal || !agent) return undefined
+  const type = agent.agentType ?? 'general-purpose'
+  return prompt =>
+    send(
+      terminal.id,
+      `Start a new ${type} agent with the Agent tool (description: "${agent.description} (re-run)") ` +
+        `using exactly this prompt:\n\n${prompt}`,
+    )
+}
+
 const HISTORY_KEY = 'subagents.showHistory'
 
 function loadShowHistory(): boolean {
@@ -170,6 +193,7 @@ export default function App() {
   const [dockOpen, setDockOpen] = useState(true)
   const [dockHeight, setDockHeight] = useState(320)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
   const close = useCallback(() => setSelectedId(null), [])
   const { acknowledge } = attention
   /** Opening a node also acknowledges its inbox items. */
@@ -182,13 +206,36 @@ export default function App() {
   )
   const selection = resolveSelection(graphState, selectedId)
   const target = selection?.target ?? null
+
+  usePublishInbox(attention.items, attention.dismiss)
+
+  // Requests from the mini window (via the backend) to open a node here.
+  useEffect(() => {
+    const sub = listen<string>('open-node', ev => {
+      if (ev.payload.startsWith('past-')) setShowHistory(true)
+      openNode(ev.payload)
+    })
+    return () => void sub.then(unlisten => unlisten())
+  }, [openNode])
+
+  const runningCount = graphState.agents.filter(a => a.status === 'running').length
+  const needsYou = attention.items.filter(i => URGENT.has(i.kind)).length
+  useEffect(() => {
+    void invoke('set_tray_status', { running: runningCount, needsYou }).catch(() => {})
+  }, [runningCount, needsYou])
   const hostTerminal = selection ? terminals.forSession(selection.sessionId) : undefined
   const sessionContext: SessionContext | undefined =
     selection && selection.target.kind === 'session'
-      ? {
-          agents: graphState.agents.filter(a => a.sessionId === selection.sessionId),
-          overlaps: overlaps.bySession.get(selection.sessionId) ?? [],
-        }
+      ? (() => {
+          const agents = graphState.agents.filter(a => a.sessionId === selection.sessionId)
+          const watchPaths = [selection.target.transcriptPath, ...agents.map(a => a.transcriptPath)]
+          return {
+            id: selection.sessionId,
+            agents,
+            overlaps: overlaps.bySession.get(selection.sessionId) ?? [],
+            watchPaths: watchPaths.filter((p): p is string => !!p),
+          }
+        })()
       : undefined
 
   const run = (action: () => Promise<unknown>) =>
@@ -218,8 +265,24 @@ export default function App() {
             <Chip label="agents" count={runningAgents} color="#a855f7" pulse />
           )}
         </div>
+        <input
+          className="header-search"
+          type="search"
+          placeholder="Search transcripts…"
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          onKeyDown={e => e.key === 'Escape' && setQuery('')}
+          title="Find which agent touched a file, ran a command or said something (last 24 hours)"
+        />
         <div className="header-actions">
           <SettingsMenu settings={settings} onChange={updateSettings} />
+          <button
+            className="header-button"
+            title="Compact always-on-top window with the inbox and running agents"
+            onClick={() => void invoke('toggle_mini').catch(e => alert(`Could not open the mini window: ${e}`))}
+          >
+            Mini
+          </button>
           <button className="header-button" onClick={() => run(terminals.startSession)}>+ New session</button>
           <button
             className={`header-button ${showHistory ? 'header-button-on' : ''}`}
@@ -262,8 +325,23 @@ export default function App() {
             showCost={settings.costEstimate}
             now={now}
             onStop={stopAction(selection!, hostTerminal, terminals.send)}
+            onRerun={rerunAction(
+              selection!,
+              graphState.agents.find(a => `agent-${a.id}` === selectedId),
+              hostTerminal,
+              terminals.send,
+            )}
             onOpenNode={openNode}
             onClose={close}
+          />
+        ) : query ? (
+          <SearchResults
+            query={query}
+            state={graphState}
+            onOpen={(nodeId, past) => {
+              if (past) setShowHistory(true)
+              openNode(nodeId)
+            }}
           />
         ) : (
           <Inbox
