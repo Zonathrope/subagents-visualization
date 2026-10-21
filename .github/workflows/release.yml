@@ -1,0 +1,58 @@
+name: Release
+
+# Builds installers on each platform and attaches them to a draft GitHub release
+# (v<version from tauri.conf.json>). Drafts are only visible to repo writers until published.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            # One .dmg that runs on both Apple Silicon and Intel Macs.
+            args: --target universal-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - platform: windows-latest
+            args: ''
+            rust-targets: ''
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: Subagents v__VERSION__
+          releaseBody: >-
+            Unsigned build. macOS: right-click the app and choose Open the first time
+            (or run `xattr -dr com.apple.quarantine /Applications/Subagents.app`).
+            Windows: SmartScreen may warn; choose More info, then Run anyway.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

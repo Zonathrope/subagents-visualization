@@ -8,11 +8,13 @@ use std::path::Path;
 use tauri::AppHandle;
 use tauri_plugin_opener::OpenerExt;
 
-/// Extensions whose default Windows handler executes the file.
+/// Extensions whose default handler executes the file (Windows and macOS).
 const RUNNABLE: &[&str] = &[
     "exe", "com", "bat", "cmd", "ps1", "psm1", "psd1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "hta",
     "msi", "msp", "msc", "lnk", "scr", "pif", "reg", "cpl", "jar", "py", "pyw", "sh", "url",
     "appref-ms", "application", "scf", "inf",
+    // macOS
+    "command", "tool", "terminal", "app", "pkg", "mpkg", "dmg", "scpt", "applescript", "workflow", "action",
 ];
 
 fn is_runnable(path: &Path) -> bool {

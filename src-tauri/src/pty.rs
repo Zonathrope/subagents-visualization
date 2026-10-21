@@ -64,8 +64,16 @@ fn claude_command(args: &[&str]) -> CommandBuilder {
         c.args(["/d", "/c", "claude"]);
         c
     };
+    // Apps started from Finder or the Dock don't get the user's shell PATH (nvm, Homebrew,
+    // npm globals), so resolve `claude` through an interactive login shell. Arguments follow
+    // as "$@".
     #[cfg(not(windows))]
-    let mut cmd = CommandBuilder::new("claude");
+    let mut cmd = {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+        let mut c = CommandBuilder::new(shell);
+        c.args(["-ilc", "exec claude \"$@\"", "claude"]);
+        c
+    };
     cmd.args(args);
     strip_parent_session_env(&mut cmd);
     cmd.env("TERM", "xterm-256color");
