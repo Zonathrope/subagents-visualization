@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import type { GraphState, WsMessage } from '../types'
-
-const WS_URL = `ws://localhost:3001`
 
 function applyMessage(state: GraphState, msg: WsMessage): GraphState {
   switch (msg.type) {
@@ -39,36 +39,31 @@ const EMPTY: GraphState = { sessions: [], agents: [], jobs: [] }
 export function useAgentStream() {
   const [graphState, setGraphState] = useState<GraphState>(EMPTY)
   const [connected, setConnected] = useState(false)
-  const ws = useRef<WebSocket | null>(null)
-  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
-    function connect() {
-      const socket = new WebSocket(WS_URL)
-      ws.current = socket
+    let disposed = false
+    // Events that arrive before the snapshot are replayed on top of it (all updates are idempotent).
+    let queued: WsMessage[] | null = []
 
-      socket.onopen = () => setConnected(true)
+    const unlistenPromise = listen<WsMessage>('graph-event', ev => {
+      if (queued) queued.push(ev.payload)
+      else setGraphState(prev => applyMessage(prev, ev.payload))
+    })
 
-      socket.onmessage = ev => {
-        try {
-          const msg: WsMessage = JSON.parse(ev.data)
-          setGraphState(prev => applyMessage(prev, msg))
-        } catch { /* skip bad frames */ }
-      }
-
-      socket.onclose = () => {
-        setConnected(false)
-        reconnectTimer.current = setTimeout(connect, 2000)
-      }
-
-      socket.onerror = () => socket.close()
-    }
-
-    connect()
+    unlistenPromise
+      .then(() => invoke<GraphState>('snapshot'))
+      .then(snapshot => {
+        if (disposed) return
+        const pending = queued ?? []
+        queued = null
+        setGraphState(pending.reduce(applyMessage, snapshot))
+        setConnected(true)
+      })
+      .catch(err => console.error('failed to load snapshot', err))
 
     return () => {
-      if (reconnectTimer.current) clearTimeout(reconnectTimer.current)
-      ws.current?.close()
+      disposed = true
+      unlistenPromise.then(unlisten => unlisten())
     }
   }, [])
 

@@ -29,7 +29,7 @@ export default function App() {
         </div>
         <div className="header-right">
           <span className={`conn-dot ${connected ? 'conn-on' : 'conn-off'}`} />
-          <span className="conn-label">{connected ? 'live' : 'reconnecting…'}</span>
+          <span className="conn-label">{connected ? 'live' : 'loading…'}</span>
         </div>
       </header>
 
