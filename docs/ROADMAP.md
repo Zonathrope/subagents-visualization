@@ -124,3 +124,13 @@ generated in-app.
 
 Also fixed: the inbox no longer reports history loaded at startup as new events (it waits for the
 backend's startup scan to finish).
+
+## Deferred: code signing
+
+Installers are built unsigned by `.github/workflows/release.yml` (draft release per version).
+- **macOS:** Apple Developer Program ($99/yr) → Developer ID Application certificate + App Store
+  Connect API key for notarization; set `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
+  `APPLE_SIGNING_IDENTITY`, `APPLE_API_ISSUER`, `APPLE_API_KEY` (+ key file) as repo secrets.
+- **Windows:** keys must live in hardware/cloud. Options: SignPath Foundation (free for OSS, needs
+  approval), Azure Artifact Signing (~$10/mo; individuals only in US/Canada), or an OV certificate from
+  a CA. All plug into Tauri via `bundle.windows.signCommand`.
