@@ -1,4 +1,5 @@
 mod parser;
+mod pty;
 mod state;
 mod transcript;
 mod types;
@@ -7,8 +8,10 @@ mod watcher;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use tauri::{Emitter, Manager};
+use tauri::ipc::Channel;
+use tauri::{Emitter, Manager, RunEvent};
 
+use pty::{PtyEvent, PtyManager, SpawnRequest};
 use state::GraphStore;
 use types::GraphState;
 
@@ -37,6 +40,32 @@ fn load_transcript(
     transcript::load(&requested).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn pty_spawn(
+    app: tauri::AppHandle,
+    request: SpawnRequest,
+    cols: u16,
+    rows: u16,
+    on_event: Channel<PtyEvent>,
+) -> Result<u32, String> {
+    app.state::<PtyManager>().spawn(app.clone(), request, cols, rows, on_event)
+}
+
+#[tauri::command]
+fn pty_write(id: u32, data: String, ptys: tauri::State<'_, PtyManager>) -> Result<(), String> {
+    ptys.write(id, &data)
+}
+
+#[tauri::command]
+fn pty_resize(id: u32, cols: u16, rows: u16, ptys: tauri::State<'_, PtyManager>) -> Result<(), String> {
+    ptys.resize(id, cols, rows)
+}
+
+#[tauri::command]
+fn pty_kill(id: u32, ptys: tauri::State<'_, PtyManager>) -> Result<(), String> {
+    ptys.kill(id)
+}
+
 /// Claude Code's data directory: `$CLAUDE_CONFIG_DIR`, else `~/.claude`.
 fn claude_dir(app: &tauri::App) -> tauri::Result<PathBuf> {
     match std::env::var_os("CLAUDE_CONFIG_DIR") {
@@ -53,6 +82,8 @@ pub fn run() {
                 .level(log::LevelFilter::Info)
                 .build(),
         )
+        .plugin(tauri_plugin_dialog::init())
+        .manage(PtyManager::default())
         .setup(|app| {
             let store = SharedStore::default();
             app.manage(store.clone());
@@ -65,7 +96,20 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![snapshot, load_transcript])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .invoke_handler(tauri::generate_handler![
+            snapshot,
+            load_transcript,
+            pty_spawn,
+            pty_write,
+            pty_resize,
+            pty_kill
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Sessions started in the app live in its terminals; don't leave them orphaned.
+            if let RunEvent::Exit = event {
+                app.state::<PtyManager>().kill_all();
+            }
+        });
 }

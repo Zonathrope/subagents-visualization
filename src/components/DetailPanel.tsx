@@ -10,14 +10,31 @@ export interface DetailTarget {
   transcriptPath?: string
 }
 
+/** Whether, and how, the user can prompt the selected session or agent. */
+export type PromptRoute =
+  | { send: (text: string) => Promise<void>; hint: string }
+  | { unavailable: string }
+
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 
-export default function DetailPanel({ target, onClose }: { target: DetailTarget; onClose: () => void }) {
+export default function DetailPanel({
+  target,
+  prompt,
+  onClose,
+}: {
+  target: DetailTarget
+  prompt: PromptRoute
+  onClose: () => void
+}) {
   const { view, error } = useTranscript(target.transcriptPath)
   const [tab, setTab] = useState<'activity' | 'changes'>('activity')
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    // Escape also interrupts Claude in a terminal, so ignore it while typing anywhere.
+    const onKey = (e: KeyboardEvent) => {
+      const typing = (e.target as HTMLElement | null)?.closest?.('.xterm, textarea, input')
+      if (e.key === 'Escape' && !typing) onClose()
+    }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
@@ -58,7 +75,52 @@ export default function DetailPanel({ target, onClose }: { target: DetailTarget;
       ) : (
         <Changes edits={edits} />
       )}
+
+      <PromptBox route={prompt} placeholder={target.kind === 'agent' ? 'Message this agent…' : 'Prompt this session…'} />
     </aside>
+  )
+}
+
+// ── Prompt box ────────────────────────────────────────────────────────────────
+
+function PromptBox({ route, placeholder }: { route: PromptRoute; placeholder: string }) {
+  const [text, setText] = useState('')
+  const [status, setStatus] = useState<string | null>(null)
+
+  if ('unavailable' in route) return <footer className="prompt prompt-unavailable">{route.unavailable}</footer>
+
+  const submit = async () => {
+    const value = text.trim()
+    if (!value) return
+    try {
+      await route.send(value)
+      setText('')
+      setStatus('Sent')
+    } catch (e) {
+      setStatus(`Failed: ${e}`)
+    }
+    setTimeout(() => setStatus(null), 2500)
+  }
+
+  return (
+    <footer className="prompt">
+      <textarea
+        value={text}
+        placeholder={placeholder}
+        rows={2}
+        onChange={e => setText(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault()
+            void submit()
+          }
+        }}
+      />
+      <div className="prompt-meta">
+        <span>{status ?? route.hint}</span>
+        <button onClick={() => void submit()} disabled={!text.trim()}>Send ⏎</button>
+      </div>
+    </footer>
   )
 }
 

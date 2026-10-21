@@ -1,41 +1,100 @@
 import { useCallback, useState } from 'react'
 import { useAgentStream } from './hooks/useAgentStream'
+import { useTerminals } from './hooks/useTerminals'
+import type { HostedTerminal } from './hooks/useTerminals'
 import AgentGraph from './components/AgentGraph'
 import DetailPanel from './components/DetailPanel'
-import type { DetailTarget } from './components/DetailPanel'
+import TerminalDock from './components/TerminalDock'
+import type { DetailTarget, PromptRoute } from './components/DetailPanel'
 import type { GraphState } from './types'
 import './App.css'
 
+interface Selection {
+  target: DetailTarget
+  /** The top-level session that owns this node; prompts go through its terminal. */
+  sessionId: string
+  /** Subagent id (from `agent-<id>.jsonl`), the address SendMessage uses. */
+  agentId?: string
+}
+
 /** Resolves a graph node id (`agent-…`, `session-…`) to what the detail panel shows. */
-function detailTarget(state: GraphState, nodeId: string | null): DetailTarget | null {
+function resolveSelection(state: GraphState, nodeId: string | null): Selection | null {
   if (nodeId?.startsWith('agent-')) {
     const a = state.agents.find(a => `agent-${a.id}` === nodeId)
-    return a ? {
-      kind: 'agent',
-      title: a.description,
-      subtitle: a.agentType,
-      status: a.status,
-      transcriptPath: a.transcriptPath,
-    } : null
+    if (!a) return null
+    const file = a.transcriptPath?.split(/[/\\]/).pop()
+    return {
+      target: {
+        kind: 'agent',
+        title: a.description,
+        subtitle: a.agentType,
+        status: a.status,
+        transcriptPath: a.transcriptPath,
+      },
+      sessionId: a.sessionId,
+      agentId: file?.replace(/^agent-/, '').replace(/\.jsonl$/, ''),
+    }
   }
   if (nodeId?.startsWith('session-')) {
     const s = state.sessions.find(s => `session-${s.id}` === nodeId)
-    return s ? {
-      kind: 'session',
-      title: s.cwd,
-      subtitle: `v${s.version} · ${s.kind}`,
-      status: s.status,
-      transcriptPath: s.transcriptPath,
-    } : null
+    if (!s) return null
+    return {
+      target: {
+        kind: 'session',
+        title: s.cwd,
+        subtitle: `v${s.version} · ${s.kind}`,
+        status: s.status,
+        transcriptPath: s.transcriptPath,
+      },
+      sessionId: s.id,
+    }
   }
   return null
 }
 
+function promptRoute(
+  sel: Selection,
+  terminal: HostedTerminal | undefined,
+  send: (id: number, text: string) => Promise<void>,
+): PromptRoute {
+  if (!terminal) {
+    return {
+      unavailable:
+        sel.target.kind === 'agent'
+          ? "View only: this agent's session runs in another terminal. Start sessions with “+ New session” to message their agents here."
+          : 'View only: this session runs in another terminal. Start sessions with “+ New session” to prompt them here.',
+    }
+  }
+  if (sel.target.kind === 'session') {
+    return { send: text => send(terminal.id, text), hint: 'Typed into the session’s terminal' }
+  }
+  if (!sel.agentId) return { unavailable: 'Waiting for this agent’s transcript…' }
+  const agentId = sel.agentId
+  return {
+    send: text =>
+      send(
+        terminal.id,
+        `Use SendMessage to send the following message to agent ${agentId} (to: "${agentId}"), ` +
+          `then let it continue:\n\n${text}`,
+      ),
+    hint: 'Delivered by the parent session via SendMessage',
+  }
+}
+
 export default function App() {
   const { graphState, connected } = useAgentStream()
+  const terminals = useTerminals()
+  const [dockOpen, setDockOpen] = useState(true)
+  const [dockHeight, setDockHeight] = useState(320)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const close = useCallback(() => setSelectedId(null), [])
-  const target = detailTarget(graphState, selectedId)
+  const selection = resolveSelection(graphState, selectedId)
+  const target = selection?.target ?? null
+
+  const run = (action: () => Promise<unknown>) =>
+    action()
+      .then(() => setDockOpen(true))
+      .catch(e => alert(`Could not start Claude Code: ${e}`))
 
   const activeSessions = graphState.sessions.filter(s => s.status === 'busy' || s.status === 'active').length
   const runningJobs = graphState.jobs.filter(j => j.status === 'running' || j.inFlight.tasks > 0).length
@@ -59,23 +118,46 @@ export default function App() {
             <Chip label="agents" count={runningAgents} color="#a855f7" pulse />
           )}
         </div>
+        <div className="header-actions">
+          <button className="header-button" onClick={() => run(terminals.startSession)}>+ New session</button>
+          {terminals.terminals.length > 0 && (
+            <button className="header-button" onClick={() => setDockOpen(o => !o)}>
+              {dockOpen ? 'Hide' : 'Show'} terminals ({terminals.terminals.length})
+            </button>
+          )}
+        </div>
         <div className="header-right">
           <span className={`conn-dot ${connected ? 'conn-on' : 'conn-off'}`} />
           <span className="conn-label">{connected ? 'live' : 'loading…'}</span>
         </div>
       </header>
 
+      <div className="workspace">
       <div className="body">
         <AgentGraph state={graphState} selectedId={target ? selectedId : null} onSelect={setSelectedId} />
 
         {target ? (
-          <DetailPanel key={selectedId} target={target} onClose={close} />
+          <DetailPanel
+            key={selectedId}
+            target={target}
+            prompt={promptRoute(selection!, terminals.forSession(selection!.sessionId), terminals.send)}
+            onClose={close}
+          />
         ) : graphState.jobs.length > 0 && (
           <aside className="sidebar">
             <div className="sidebar-title">Background jobs</div>
             {graphState.jobs.map(job => (
               <div key={job.id} className="sidebar-job">
-                <div className="sidebar-job-name">{job.name}</div>
+                <div className="sidebar-job-name">
+                  {job.name}
+                  <button
+                    className="sidebar-attach"
+                    title="Open this background session in a terminal (claude attach)"
+                    onClick={() => run(() => terminals.attach(job))}
+                  >
+                    Attach
+                  </button>
+                </div>
                 <div className="sidebar-job-status">
                   <span
                     className="status-badge"
@@ -109,6 +191,18 @@ export default function App() {
             ))}
           </aside>
         )}
+      </div>
+      {dockOpen && terminals.terminals.length > 0 && (
+        <TerminalDock
+          terminals={terminals.terminals}
+          activeId={terminals.activeId}
+          height={dockHeight}
+          onHeightChange={setDockHeight}
+          onSelect={terminals.setActiveId}
+          onClose={terminals.close}
+          onHide={() => setDockOpen(false)}
+        />
+      )}
       </div>
     </div>
   )

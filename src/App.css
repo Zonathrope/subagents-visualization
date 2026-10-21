@@ -617,3 +617,146 @@ body {
 .change .diff { max-height: none; }
 .change-header { display: flex; align-items: center; gap: 8px; }
 .change-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+
+/* ── Workspace & header actions ───────────────────────────────────────── */
+
+.workspace {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.header-actions { display: flex; gap: 8px; margin-left: 16px; }
+
+.header-button {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.header-button:hover { border-color: var(--agent); }
+
+.sidebar-job-name { display: flex; align-items: center; gap: 8px; }
+.sidebar-attach {
+  margin-left: auto;
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--job);
+  font: inherit;
+  font-size: 10px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+.sidebar-attach:hover { border-color: var(--job); }
+
+/* ── Terminal dock ────────────────────────────────────────────────────── */
+
+.dock {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  min-height: 0;
+}
+
+.dock-handle {
+  position: absolute;
+  top: -3px;
+  left: 0;
+  right: 0;
+  height: 6px;
+  cursor: ns-resize;
+  z-index: 5;
+}
+
+.dock-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 0 8px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.dock-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 5px 6px 5px 10px;
+  color: var(--text-dim);
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+.dock-tab:hover { color: var(--text); }
+.dock-tab.active { color: var(--text); border-bottom-color: var(--agent); }
+.dock-tab.exited .dock-tab-title { text-decoration: line-through; opacity: 0.6; }
+.dock-tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.dock-tab-close, .dock-hide {
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  font: inherit;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 3px;
+}
+.dock-tab-close:hover, .dock-hide:hover { color: var(--text); background: var(--surface2); }
+.dock-hide { margin-left: auto; }
+
+.dock-panes { flex: 1; min-height: 0; position: relative; }
+.dock-pane { position: absolute; inset: 4px 0 0 8px; }
+
+/* ── Prompt box ───────────────────────────────────────────────────────── */
+
+.prompt {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  padding: 10px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.prompt textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 44px;
+  max-height: 240px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font: inherit;
+  line-height: 1.5;
+}
+.prompt textarea:focus { outline: none; border-color: var(--agent); }
+
+.prompt-meta { display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 11px; }
+.prompt-meta button {
+  margin-left: auto;
+  background: var(--agent);
+  border: none;
+  border-radius: 5px;
+  color: white;
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+.prompt-meta button:disabled { opacity: 0.4; cursor: default; }
+
+.prompt-unavailable { color: var(--text-dim); font-size: 11px; line-height: 1.5; }

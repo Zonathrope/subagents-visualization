@@ -37,6 +37,7 @@ export interface JobNode extends Record<string, unknown> {
   updatedAt: string
   suggestedReply?: string
   sessionId?: string
+  resumeSessionId?: string
   timeline: TimelineEntry[]
 }
 

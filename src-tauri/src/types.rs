@@ -69,6 +69,9 @@ pub struct JobNode {
     pub suggested_reply: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// The conversation a background session continues; its transcript is named after this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_session_id: Option<String>,
     pub timeline: Vec<TimelineEntry>,
 }
 

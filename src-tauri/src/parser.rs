@@ -115,6 +115,7 @@ fn parse_job_value(id: String, data: &Value, timeline: Vec<TimelineEntry>) -> Jo
         updated_at: str_field(data, &["updatedAt"]).unwrap_or_default(),
         suggested_reply: str_field(data, &["suggestedReply"]),
         session_id: str_field(data, &["sessionId"]),
+        resume_session_id: str_field(data, &["resumeSessionId"]),
         timeline,
     }
 }

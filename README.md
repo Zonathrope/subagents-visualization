@@ -5,6 +5,16 @@ Desktop app that shows a live graph of Claude Code sessions, background jobs, an
 Built with [Tauri 2](https://tauri.app): a Rust backend watches the Claude Code data directory and pushes
 changes to a React + React Flow UI.
 
+## Features
+
+- **Live graph** of sessions, background jobs and subagents (including agents spawned by subagents).
+- **Detail panel**: click a session or agent to read its transcript: prompts, replies, stored reasoning,
+  every tool call with its output, and a **Changes** tab with per-file diffs.
+- **Built-in terminals**: start Claude Code sessions from the app (**+ New session**) or attach to
+  background sessions. Sessions hosted in the app can be prompted from the detail panel, and so can
+  their subagents (the message is relayed by the parent session with `SendMessage`).
+  Sessions running in other terminals are view-only.
+
 ## What it watches
 
 The data directory is `$CLAUDE_CONFIG_DIR` if set, otherwise `~/.claude`:
@@ -30,6 +40,8 @@ npm run build   # release build + installers in src-tauri/target/release/bundle/
 - `src-tauri/src/watcher.rs`: file watching, debouncing, polling fallback
 - `src-tauri/src/parser.rs`: lenient parsing of session, job and transcript files
 - `src-tauri/src/state.rs`: in-memory graph state
+- `src-tauri/src/transcript.rs`: transcript → display items for the detail panel
+- `src-tauri/src/pty.rs`: pseudo-terminals hosting `claude` sessions
 - `src-tauri/src/types.rs`: wire types (mirrors `src/types.ts`)
 
 ## License
