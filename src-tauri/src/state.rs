@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::types::{AgentNode, AgentStatus, GraphState, JobNode, SessionInfo};
+use crate::types::{AgentNode, AgentStatus, GraphState, JobNode, SessionInfo, SessionSummary};
 
 #[derive(Default)]
 pub struct GraphStore {
@@ -12,6 +12,7 @@ pub struct GraphStore {
     agent_transcripts: HashMap<String, String>,
     /// Session id → main transcript path.
     session_transcripts: HashMap<String, String>,
+    summaries: HashMap<String, SessionSummary>,
 }
 
 impl GraphStore {
@@ -20,7 +21,35 @@ impl GraphStore {
             sessions: self.sessions.values().cloned().collect(),
             agents: self.agents.values().cloned().collect(),
             jobs: self.jobs.values().cloned().collect(),
+            summaries: self.summaries.values().cloned().collect(),
         }
+    }
+
+    pub fn has_session_transcript(&self, session_id: &str) -> bool {
+        self.session_transcripts.contains_key(session_id)
+    }
+
+    /// Folds new transcript activity into the session's summary. Returns it if it changed.
+    pub fn update_summary(
+        &mut self,
+        session_id: &str,
+        path: &str,
+        cwd: Option<String>,
+        last_activity: Option<i64>,
+    ) -> Option<SessionSummary> {
+        let is_new = !self.summaries.contains_key(session_id);
+        let entry = self.summaries.entry(session_id.to_owned()).or_insert_with(|| SessionSummary {
+            id: session_id.to_owned(),
+            cwd: String::new(),
+            last_activity: 0,
+            transcript_path: path.to_owned(),
+        });
+        let before = entry.clone();
+        if let Some(cwd) = cwd {
+            entry.cwd = cwd;
+        }
+        entry.last_activity = entry.last_activity.max(last_activity.unwrap_or(0));
+        (is_new || *entry != before).then(|| entry.clone())
     }
 
     pub fn update_session(&mut self, mut info: SessionInfo) -> SessionInfo {
@@ -138,6 +167,16 @@ mod tests {
         assert_eq!(done.status, AgentStatus::Failed);
         assert_eq!(done.end_time, Some(5));
         assert!(s.complete_agent("x", false, 9).is_none(), "first completion wins");
+    }
+
+    #[test]
+    fn summary_reports_only_changes() {
+        let mut s = GraphStore::default();
+        assert!(s.update_summary("a", "a.jsonl", None, None).is_some(), "first sight is reported");
+        assert!(s.update_summary("a", "a.jsonl", None, None).is_none());
+        let up = s.update_summary("a", "a.jsonl", Some("F:/p".into()), Some(10)).unwrap();
+        assert_eq!((up.cwd.as_str(), up.last_activity), ("F:/p", 10));
+        assert!(s.update_summary("a", "a.jsonl", None, Some(5)).is_none(), "older activity ignored");
     }
 
     #[test]

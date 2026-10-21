@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAgentStream } from './hooks/useAgentStream'
 import { useTerminals } from './hooks/useTerminals'
 import type { HostedTerminal } from './hooks/useTerminals'
@@ -7,6 +7,7 @@ import DetailPanel from './components/DetailPanel'
 import TerminalDock from './components/TerminalDock'
 import type { DetailTarget, PromptRoute } from './components/DetailPanel'
 import type { GraphState } from './types'
+import { liveSessionIds, withDerivedStatus } from './liveness'
 import './App.css'
 
 interface Selection {
@@ -15,10 +16,13 @@ interface Selection {
   sessionId: string
   /** Subagent id (from `agent-<id>.jsonl`), the address SendMessage uses. */
   agentId?: string
+  /** False once the owning session has ended; ended sessions can't be prompted. */
+  live: boolean
 }
 
-/** Resolves a graph node id (`agent-…`, `session-…`) to what the detail panel shows. */
+/** Resolves a graph node id (`agent-…`, `session-…`, `past-…`) to what the detail panel shows. */
 function resolveSelection(state: GraphState, nodeId: string | null): Selection | null {
+  const live = liveSessionIds(state)
   if (nodeId?.startsWith('agent-')) {
     const a = state.agents.find(a => `agent-${a.id}` === nodeId)
     if (!a) return null
@@ -33,6 +37,7 @@ function resolveSelection(state: GraphState, nodeId: string | null): Selection |
       },
       sessionId: a.sessionId,
       agentId: file?.replace(/^agent-/, '').replace(/\.jsonl$/, ''),
+      live: live.has(a.sessionId),
     }
   }
   if (nodeId?.startsWith('session-')) {
@@ -44,9 +49,25 @@ function resolveSelection(state: GraphState, nodeId: string | null): Selection |
         title: s.cwd,
         subtitle: `v${s.version} · ${s.kind}`,
         status: s.status,
+        transcriptPath: s.transcriptPath ?? state.summaries.find(x => x.id === s.id)?.transcriptPath,
+      },
+      sessionId: s.id,
+      live: true,
+    }
+  }
+  if (nodeId?.startsWith('past-')) {
+    const s = state.summaries.find(s => `past-${s.id}` === nodeId)
+    if (!s) return null
+    return {
+      target: {
+        kind: 'session',
+        title: s.cwd || s.id,
+        subtitle: s.lastActivity ? `last active ${new Date(s.lastActivity).toLocaleString()}` : undefined,
+        status: 'ended',
         transcriptPath: s.transcriptPath,
       },
       sessionId: s.id,
+      live: false,
     }
   }
   return null
@@ -57,6 +78,7 @@ function promptRoute(
   terminal: HostedTerminal | undefined,
   send: (id: number, text: string) => Promise<void>,
 ): PromptRoute {
+  if (!sel.live) return { unavailable: 'View only: this session has ended.' }
   if (!terminal) {
     return {
       unavailable:
@@ -81,8 +103,40 @@ function promptRoute(
   }
 }
 
+const HISTORY_KEY = 'subagents.showHistory'
+
+function loadShowHistory(): boolean {
+  try {
+    return localStorage.getItem(HISTORY_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+/** Re-renders periodically so finished agents dim on schedule. */
+function useNow(intervalMs: number) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), intervalMs)
+    return () => clearInterval(t)
+  }, [intervalMs])
+  return now
+}
+
 export default function App() {
-  const { graphState, connected } = useAgentStream()
+  const { graphState: rawState, connected } = useAgentStream()
+  const graphState = useMemo(() => withDerivedStatus(rawState), [rawState])
+  const now = useNow(30_000)
+  const [showHistory, setShowHistory] = useState(loadShowHistory)
+  const toggleHistory = () =>
+    setShowHistory(on => {
+      try {
+        localStorage.setItem(HISTORY_KEY, on ? '0' : '1')
+      } catch {
+        /* preference just won't persist */
+      }
+      return !on
+    })
   const terminals = useTerminals()
   const [dockOpen, setDockOpen] = useState(true)
   const [dockHeight, setDockHeight] = useState(320)
@@ -120,6 +174,14 @@ export default function App() {
         </div>
         <div className="header-actions">
           <button className="header-button" onClick={() => run(terminals.startSession)}>+ New session</button>
+          <button
+            className={`header-button ${showHistory ? 'header-button-on' : ''}`}
+            aria-pressed={showHistory}
+            title="Show sessions that ended in the last 24 hours, with their agents"
+            onClick={toggleHistory}
+          >
+            History
+          </button>
           {terminals.terminals.length > 0 && (
             <button className="header-button" onClick={() => setDockOpen(o => !o)}>
               {dockOpen ? 'Hide' : 'Show'} terminals ({terminals.terminals.length})
@@ -134,7 +196,13 @@ export default function App() {
 
       <div className="workspace">
       <div className="body">
-        <AgentGraph state={graphState} selectedId={target ? selectedId : null} onSelect={setSelectedId} />
+        <AgentGraph
+          state={graphState}
+          showHistory={showHistory}
+          now={now}
+          selectedId={target ? selectedId : null}
+          onSelect={setSelectedId}
+        />
 
         {target ? (
           <DetailPanel

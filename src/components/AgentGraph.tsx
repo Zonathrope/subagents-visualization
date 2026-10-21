@@ -10,17 +10,23 @@ import {
 import type { Edge, Node } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 
-import type { GraphState } from '../types'
-import { AgentNodeComponent, JobNodeComponent, SessionNodeComponent } from './nodes'
+import type { GraphState, SessionSummary } from '../types'
+import { DIM_AFTER_MS, liveSessionIds } from '../liveness'
+import { AgentNodeComponent, JobNodeComponent, PastSessionNodeComponent, SessionNodeComponent } from './nodes'
 import { applyDagreLayout } from './layout'
 
 const nodeTypes = {
   session: SessionNodeComponent,
+  pastSession: PastSessionNodeComponent,
   job: JobNodeComponent,
   agent: AgentNodeComponent,
 }
 
-function buildElements(state: GraphState): { nodes: Node[]; edges: Edge[] } {
+/**
+ * Live sessions, jobs and their agents. With `showHistory`, sessions that have ended
+ * (within the backend's history window) are added as faded nodes with their agents.
+ */
+function buildElements(state: GraphState, showHistory: boolean, now: number): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = []
   const edges: Edge[] = []
 
@@ -57,26 +63,52 @@ function buildElements(state: GraphState): { nodes: Node[]; edges: Edge[] } {
     }
   }
 
-  for (const a of state.agents) {
-    nodes.push({ id: `agent-${a.id}`, type: 'agent', data: a, position: { x: 0, y: 0 } })
+  const live = liveSessionIds(state)
+  const pastNodes = new Set<string>()
+  const addPastSession = (summary: SessionSummary) => {
+    const id = `past-${summary.id}`
+    if (pastNodes.has(id)) return id
+    pastNodes.add(id)
+    nodes.push({ id, type: 'pastSession', data: summary, position: { x: 0, y: 0 } })
+    return id
+  }
 
-    if (a.parentId) {
+  if (showHistory) {
+    for (const summary of state.summaries) {
+      if (!live.has(summary.id)) addPastSession(summary)
+    }
+  }
+
+  /** The node a top-level agent hangs off: its live session, its background job, or its ended session. */
+  const rootFor = (sessionId: string): string | undefined => {
+    if (state.sessions.some(s => s.id === sessionId)) return `session-${sessionId}`
+    const job = state.jobs.find(j => j.sessionId === sessionId || j.resumeSessionId === sessionId)
+    if (job) return `job-${job.id}`
+    if (!showHistory) return undefined
+    const summary = state.summaries.find(s => s.id === sessionId)
+    return addPastSession(summary ?? { id: sessionId, cwd: '', lastActivity: 0, transcriptPath: '' })
+  }
+
+  for (const a of state.agents) {
+    if (!live.has(a.sessionId) && !showHistory) continue
+
+    const finishedLongAgo = a.status !== 'running' && now - (a.endTime ?? a.startTime) > DIM_AFTER_MS
+    nodes.push({
+      id: `agent-${a.id}`,
+      type: 'agent',
+      data: a,
+      position: { x: 0, y: 0 },
+      className: finishedLongAgo ? 'dimmed' : undefined,
+    })
+
+    const source = a.parentId ? `agent-${a.parentId}` : rootFor(a.sessionId)
+    if (source) {
       edges.push({
-        id: `e-agent-${a.parentId}-${a.id}`,
-        source: `agent-${a.parentId}`,
+        id: `e-${source}-agent-${a.id}`,
+        source,
         target: `agent-${a.id}`,
         animated: a.status === 'running',
       })
-    } else {
-      const parentSession = state.sessions.find(s => s.id === a.sessionId)
-      if (parentSession) {
-        edges.push({
-          id: `e-session-${parentSession.id}-agent-${a.id}`,
-          source: `session-${parentSession.id}`,
-          target: `agent-${a.id}`,
-          animated: a.status === 'running',
-        })
-      }
     }
   }
 
@@ -85,10 +117,14 @@ function buildElements(state: GraphState): { nodes: Node[]; edges: Edge[] } {
 
 export default function AgentGraph({
   state,
+  showHistory,
+  now,
   selectedId,
   onSelect,
 }: {
   state: GraphState
+  showHistory: boolean
+  now: number
   selectedId: string | null
   onSelect: (nodeId: string) => void
 }) {
@@ -98,7 +134,10 @@ export default function AgentGraph({
   const [needsFit, setNeedsFit] = useState(false)
   const rfInstance = useRef<any>(null)
 
-  const { nodes: nextNodes, edges: nextEdges } = useMemo(() => buildElements(state), [state])
+  const { nodes: nextNodes, edges: nextEdges } = useMemo(
+    () => buildElements(state, showHistory, now),
+    [state, showHistory, now],
+  )
 
   useEffect(() => {
     const key = JSON.stringify(nextNodes.map(n => n.id))
@@ -135,7 +174,7 @@ export default function AgentGraph({
     rfInstance.current = instance
   }, [])
 
-  const isEmpty = state.sessions.length === 0 && state.jobs.length === 0 && state.agents.length === 0
+  const isEmpty = nextNodes.length === 0
 
   return (
     <div style={{ flex: 1, position: 'relative' }}>
@@ -171,6 +210,7 @@ export default function AgentGraph({
 
 function miniMapColor(node: Node) {
   if (node.type === 'session') return '#3b82f6'
+  if (node.type === 'pastSession') return '#334155'
   if (node.type === 'job') return '#06b6d4'
   return '#a855f7'
 }

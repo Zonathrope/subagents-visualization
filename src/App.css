@@ -760,3 +760,11 @@ body {
 .prompt-meta button:disabled { opacity: 0.4; cursor: default; }
 
 .prompt-unavailable { color: var(--text-dim); font-size: 11px; line-height: 1.5; }
+
+/* ── History & liveness ───────────────────────────────────────────────── */
+
+.header-button-on { border-color: var(--session); color: var(--session); }
+
+.node-past-session { opacity: 0.6; border-style: dashed; }
+.react-flow__node.dimmed { opacity: 0.45; transition: opacity 0.3s; }
+.react-flow__node.dimmed:hover, .react-flow__node.dimmed.selected { opacity: 1; }

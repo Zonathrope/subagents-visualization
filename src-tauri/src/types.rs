@@ -84,11 +84,24 @@ pub struct TimelineEntry {
     pub text: Option<String>,
 }
 
+/// What a session's main transcript says about it. Covers sessions that have ended,
+/// which no longer appear under `sessions/`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSummary {
+    pub id: String,
+    pub cwd: String,
+    /// Timestamp (ms) of the newest record seen.
+    pub last_activity: i64,
+    pub transcript_path: String,
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct GraphState {
     pub sessions: Vec<SessionInfo>,
     pub agents: Vec<AgentNode>,
     pub jobs: Vec<JobNode>,
+    pub summaries: Vec<SessionSummary>,
 }
 
 /// Incremental update pushed to the frontend on the `graph-event` channel.
@@ -101,6 +114,7 @@ pub enum GraphEvent {
     AgentUpdate { data: AgentNode },
     JobUpdate { data: JobNode },
     JobRemoved { id: String },
+    SessionSummary { data: SessionSummary },
     /// New lines were appended to a transcript; open detail views should reload it.
     TranscriptChanged { path: String },
 }

@@ -12,7 +12,12 @@ use serde_json::Value;
 use crate::types::{AgentNode, AgentStatus, InFlight, JobNode, SessionInfo, TimelineEntry};
 
 /// How far back from the end of a transcript to start reading the first time we see it.
-const INITIAL_TAIL_BYTES: u64 = 64 * 1024;
+/// Generous on purpose: attachment records (tool lists, skills) can add hundreds of KB
+/// after an `Agent` call, and a missed call means a missing node. The startup scan only
+/// covers recently modified transcripts, so this stays cheap.
+const INITIAL_TAIL_BYTES: u64 = 16 * 1024 * 1024;
+/// Single records above this (inline images, huge tool output) are skipped unparsed.
+const MAX_LINE_BYTES: usize = 1024 * 1024;
 
 /// First non-empty string among `keys` (mirrors JS `a || b`).
 fn str_field(v: &Value, keys: &[&str]) -> Option<String> {
@@ -66,6 +71,13 @@ fn parse_session_value(data: &Value) -> Option<SessionInfo> {
         kind: str_field(data, &["kind"]).unwrap_or_default(),
         transcript_path: None,
     })
+}
+
+/// Working directory and newest timestamp (ms) found in a batch of transcript records.
+pub fn transcript_activity(records: &[Value]) -> (Option<String>, Option<i64>) {
+    let cwd = records.iter().rev().find_map(|r| str_field(r, &["cwd"]));
+    let last = records.iter().filter_map(parse_timestamp).max();
+    (cwd, last)
 }
 
 /// `subagents/agent-<id>.meta.json` names the parent's `Agent` tool_use id.
@@ -133,9 +145,15 @@ fn parse_timeline(text: &str) -> Vec<TimelineEntry> {
 }
 
 /// Tracks a read offset per transcript so each call returns only newly appended lines.
-#[derive(Default)]
 pub struct TranscriptTail {
     positions: HashMap<PathBuf, u64>,
+    initial_tail: u64,
+}
+
+impl Default for TranscriptTail {
+    fn default() -> Self {
+        Self { positions: HashMap::new(), initial_tail: INITIAL_TAIL_BYTES }
+    }
 }
 
 impl TranscriptTail {
@@ -145,7 +163,7 @@ impl TranscriptTail {
 
         let known = self.positions.get(path).copied().filter(|&p| p <= size);
         // First sight (or the file shrank, i.e. was rewritten): start near the end.
-        let start = known.unwrap_or_else(|| size.saturating_sub(INITIAL_TAIL_BYTES));
+        let start = known.unwrap_or_else(|| size.saturating_sub(self.initial_tail));
         if size <= start {
             self.positions.insert(path.to_owned(), start);
             return Vec::new();
@@ -171,6 +189,7 @@ impl TranscriptTail {
             lines.next();
         }
         lines
+            .filter(|l| l.len() <= MAX_LINE_BYTES)
             .filter_map(|l| serde_json::from_slice::<Value>(l).ok())
             .collect()
     }
@@ -382,6 +401,16 @@ mod tests {
     }
 
     #[test]
+    fn activity_takes_latest_cwd_and_timestamp() {
+        let recs = vec![
+            json!({ "cwd": "F:/old", "timestamp": "2026-10-21T10:00:00.000Z" }),
+            json!({ "cwd": "F:/new", "timestamp": "2026-10-21T09:00:00.000Z" }),
+            json!({ "type": "summary" }),
+        ];
+        assert_eq!(transcript_activity(&recs), (Some("F:/new".into()), Some(1792576800000)));
+    }
+
+    #[test]
     fn tail_reads_only_complete_new_lines() {
         let dir = std::env::temp_dir().join(format!("subagents-tail-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -407,11 +436,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("big.jsonl");
         let filler = format!("{{\"pad\":\"{}\"}}\n", "x".repeat(1000));
-        let mut content = filler.repeat(100); // > 64 KiB
+        let mut content = filler.repeat(100); // > the 64 KiB window below
         content.push_str("{\"last\":true}\n");
         std::fs::write(&path, content).unwrap();
 
-        let lines = TranscriptTail::default().read_new_lines(&path);
+        let mut tail = TranscriptTail { initial_tail: 64 * 1024, ..Default::default() };
+        let lines = tail.read_new_lines(&path);
+        assert!(lines.len() < 100, "should start mid-file");
         assert!(lines.iter().all(|l| l.get("pad").is_some() || l.get("last").is_some()));
         assert_eq!(lines.last(), Some(&json!({ "last": true })));
 

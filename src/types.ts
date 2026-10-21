@@ -1,4 +1,5 @@
-export type AgentStatus = 'running' | 'completed' | 'failed' | 'blocked' | 'idle'
+/** `stopped` is derived in the UI: still running per its transcript, but its session ended. */
+export type AgentStatus = 'running' | 'completed' | 'failed' | 'stopped'
 
 export interface SessionInfo extends Record<string, unknown> {
   id: string
@@ -48,10 +49,19 @@ export interface TimelineEntry {
   text?: string
 }
 
+/** What a session's transcript says about it, including sessions that have ended. */
+export interface SessionSummary extends Record<string, unknown> {
+  id: string
+  cwd: string
+  lastActivity: number
+  transcriptPath: string
+}
+
 export interface GraphState {
   sessions: SessionInfo[]
   agents: AgentNode[]
   jobs: JobNode[]
+  summaries: SessionSummary[]
 }
 
 export type WsMessage =
@@ -61,6 +71,7 @@ export type WsMessage =
   | { type: 'agent_update'; data: AgentNode }
   | { type: 'job_update'; data: JobNode }
   | { type: 'job_removed'; id: string }
+  | { type: 'session_summary'; data: SessionSummary }
   | { type: 'transcript_changed'; path: string }
 
 // ── Transcript detail view (mirrors src-tauri/src/transcript.rs) ──────────────

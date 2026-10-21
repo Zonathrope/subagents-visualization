@@ -18,6 +18,9 @@ const POLL_INTERVAL: Duration = Duration::from_millis(1500);
 /// Transcripts touched within this window are re-checked every tick, as a backstop for
 /// file-change notifications that Windows delivers late or not at all for appends.
 const HOT_WINDOW: Duration = Duration::from_secs(10 * 60);
+/// The startup scan skips transcripts untouched for longer than this; older sessions
+/// would only clutter the graph (and the History view) with agents nobody is watching.
+const HISTORY_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);
 
 pub struct ClaudeDirs {
     pub sessions: PathBuf,
@@ -90,8 +93,30 @@ impl ClaudeDirs {
         } else {
             children(dir)
         };
-        paths.iter().filter_map(|p| self.classify(p)).collect()
+        paths
+            .iter()
+            .filter_map(|p| self.classify(p))
+            .filter(|t| t.transcript_path().is_none_or(recently_modified))
+            .collect()
     }
+
+    /// Finds `projects/<project>/<session_id>.jsonl` for a session whose transcript the
+    /// scan skipped (e.g. a live session that has been idle longer than the history window).
+    fn find_transcript(&self, session_id: &str) -> Option<PathBuf> {
+        std::fs::read_dir(&self.projects)
+            .ok()?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path().join(format!("{session_id}.jsonl")))
+            .find(|p| p.is_file())
+    }
+}
+
+fn recently_modified(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < HISTORY_WINDOW)
 }
 
 fn has_ext(path: &Path, ext: &str) -> bool {
@@ -203,9 +228,15 @@ impl<E: Fn(GraphEvent)> Worker<E> {
 
         match target {
             Target::Session(path) => {
+                let info = parser::parse_session(path);
+                let unlinked = info.as_ref().filter(|i| !self.store.lock().unwrap().has_session_transcript(&i.id));
+                let found = unlinked.and_then(|i| self.dirs.find_transcript(&i.id));
                 let mut store = self.store.lock().unwrap();
-                match parser::parse_session(path) {
+                match info {
                     Some(info) => {
+                        if let Some(transcript) = found {
+                            store.link_session_transcript(&info.id, &transcript.to_string_lossy());
+                        }
                         let data = store.update_session(info);
                         events.push(GraphEvent::SessionUpdate { data });
                     }
@@ -243,6 +274,12 @@ impl<E: Fn(GraphEvent)> Worker<E> {
                     events.push(GraphEvent::SessionUpdate { data });
                 }
                 new_lines = !lines.is_empty();
+                if new_lines {
+                    let (cwd, last) = parser::transcript_activity(&lines);
+                    if let Some(data) = store.update_summary(&session_id, &path_str, cwd, last) {
+                        events.push(GraphEvent::SessionSummary { data });
+                    }
+                }
                 apply_agent_events(&mut store, &lines, None, &mut events);
             }
             Target::SubTranscript(path) => {

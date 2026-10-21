@@ -1,5 +1,5 @@
 import { Handle, Position } from '@xyflow/react'
-import type { AgentNode, JobNode, SessionInfo } from '../types'
+import type { AgentNode, JobNode, SessionInfo, SessionSummary } from '../types'
 
 function elapsed(startMs: number, endMs?: number): string {
   const ms = (endMs ?? Date.now()) - startMs
@@ -23,6 +23,7 @@ const STATUS_COLOR: Record<string, string> = {
   blocked: '#f59e0b',
   done: '#64748b',
   unknown: '#64748b',
+  stopped: '#a8a29e',
 }
 
 function StatusDot({ status }: { status: string }) {
@@ -62,6 +63,32 @@ export function SessionNodeComponent({ data }: { data: SessionInfo }) {
       </div>
     </div>
   )
+}
+
+// ── Ended session node (History view) ─────────────────────────────────────────
+
+export function PastSessionNodeComponent({ data }: { data: SessionSummary }) {
+  const short = data.cwd ? data.cwd.split(/[/\\]/).slice(-2).join('/') : data.id.slice(0, 8)
+  return (
+    <div className="node node-past-session">
+      <Handle type="source" position={Position.Bottom} />
+      <div className="node-header">
+        <span className="node-kind">ENDED SESSION</span>
+      </div>
+      <div className="node-title" title={data.cwd || data.id}>{short}</div>
+      <div className="node-meta">
+        <span>{data.lastActivity ? `last active ${ago(data.lastActivity)}` : 'no activity recorded'}</span>
+      </div>
+    </div>
+  )
+}
+
+function ago(ms: number): string {
+  const s = Math.max(0, (Date.now() - ms) / 1000)
+  if (s < 60) return 'just now'
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
+  return `${Math.floor(s / 86400)}d ago`
 }
 
 // ── Job node ──────────────────────────────────────────────────────────────────
