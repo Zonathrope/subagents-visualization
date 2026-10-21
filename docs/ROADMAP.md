@@ -1,6 +1,6 @@
 # Roadmap: making the tool more efficient
 
-Status: proposal (2026-10-21). Nothing here is built yet.
+Status: milestone 1 agreed (2026-10-21); see **Milestone 1: decisions** at the end.
 
 ## Framing
 
@@ -67,3 +67,46 @@ Timeline, combined diffs, search and re-run are worthwhile but matter less day t
 - Which of the four jobs takes most of the user's time in practice?
 - How often do agents run in parallel on the same repo? (Drives the priority of conflict warnings.)
 - Can a permission-prompt wait be detected from files on disk?
+
+## Milestone 1: decisions (agreed 2026-10-21)
+
+**Context.** 1–2 sessions, each often with parallel subagents; agents mostly in separate worktrees;
+the app stays visible on a second monitor; the main pain is noticing what needs attention.
+Billing varies between subscription and API.
+
+**Facts from disk** (checked against `~/.claude`):
+- A pending permission prompt is not recorded anywhere while it is pending; it looks like a long-running tool.
+- Sessions only report `busy` / `idle`. Background jobs report `state: blocked` with `needs` and `suggestedReply`.
+- `message.usage` repeats on every line of one response (same `message.id`); count each response once,
+  taking the line with a non-null `stop_reason` (subagent transcripts stream partial counts first).
+
+**Attention inbox**
+- Replaces the jobs sidebar on the right; blocked jobs appear there as items (job nodes stay in the graph).
+- Events: session waiting (busy → idle), job blocked, agent failed, agent stuck, agent finished.
+- Delivery: in-app highlight + sound, no OS toasts. Urgent sound for the first four; finished only highlights.
+- An item clears when the situation resolves or when its node is opened; manual dismiss too.
+- Only transitions seen while the app runs create items (no flood of old events at startup);
+  jobs already blocked at startup are listed without a sound.
+
+**Stuck detection.** A running agent with no new transcript line for N minutes; default 3, configurable.
+Also the only way to surface a hidden permission prompt.
+
+**Tokens.** Cards show `42k ctx · 8.1k out` (latest context size; total output). Optional cost estimate
+from a built-in price table, off by default, labeled as an estimate.
+
+**Worktree overlap.** Badge on agents whose edits touched the same file as another agent or the main
+session; the session panel lists overlapping files and who touched them. Paths are compared relative to the
+repo root (`.claude/worktrees/<name>/` stripped).
+
+**Extras in milestone 1**
+- Result first: an agent's final report pinned at the top of its panel.
+- Open file: the system default app, no line number (script and executable types are revealed in
+  Explorer instead of opened, so clicking never runs code).
+- Stop agent: the hosting parent session is asked to stop it (in-app sessions only).
+- Timeline: a tab in the session panel, one bar per agent; clicking a bar opens the agent.
+
+**Settings.** Small settings popover (stuck threshold, sounds, cost estimate), stored locally. Sounds are
+generated in-app.
+
+**Later:** combined per-session diffs, re-run with a tweak, search across transcripts, tray icon,
+mini window, start at login.
